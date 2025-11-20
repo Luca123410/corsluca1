@@ -8,16 +8,16 @@ const app = express();
 app.use(cors());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// --- DEFINIZIONE MANIFEST ---
+// --- CONFIGURAZIONE DEL MANIFEST ---
 const manifest = {
     id: "org.community.tmdb-rd-addon",
-    version: "1.0.0",
-    name: "TMDB & Real-Debrid Addon",
-    description: "Addon configurabile",
+    version: "1.0.1",
+    name: "TMDB & Real-Debrid ITA",
+    description: "Catalogo TMDB e Streaming via Real-Debrid",
     resources: ["catalog", "stream"],
     types: ["movie", "series"],
     catalogs: [
-        { type: "movie", id: "tmdb_trending", name: "TMDB Trending" }
+        { type: "movie", id: "tmdb_trending", name: "Film di Tendenza (TMDB)" }
     ],
     idPrefixes: ["tmdb"],
     behaviorHints: {
@@ -28,7 +28,7 @@ const manifest = {
 
 const builder = new addonBuilder(manifest);
 
-// --- HELPER: Decodifica Configurazione ---
+// Funzione helper per decodificare la configurazione dall'URL
 function getConfig(configStr) {
     try {
         return JSON.parse(Buffer.from(configStr, 'base64').toString());
@@ -37,17 +37,17 @@ function getConfig(configStr) {
     }
 }
 
-// --- HANDLER 1: CATALOGO (TMDB) ---
+// --- GESTIONE CATALOGO (TMDB) ---
 builder.defineCatalogHandler(async ({ type, id, config }) => {
     const tmdbKey = config?.tmdb;
     
     if (!tmdbKey) {
-        return { metas: [{ id: 'error', type: 'movie', name: 'Inserisci API Key TMDB nelle impostazioni' }] };
+        return { metas: [{ id: 'config_error', type: 'movie', name: '⚠️ CONFIGURAZIONE MANCANTE: Inserisci TMDB Key' }] };
     }
 
-    // Esempio chiamata TMDB (Trending Movies)
     if (type === "movie" && id === "tmdb_trending") {
         try {
+            // Chiamata API a TMDB per i film popolari
             const url = `https://api.themoviedb.org/3/trending/movie/day?api_key=${tmdbKey}&language=it-IT`;
             const response = await axios.get(url);
             
@@ -56,129 +56,154 @@ builder.defineCatalogHandler(async ({ type, id, config }) => {
                 type: "movie",
                 name: item.title,
                 poster: `https://image.tmdb.org/t/p/w500${item.poster_path}`,
-                description: item.overview
+                description: item.overview,
+                releaseInfo: item.release_date ? item.release_date.split('-')[0] : ''
             }));
             return { metas };
         } catch (error) {
-            console.error("Errore TMDB:", error.message);
+            console.error("Errore TMDB Catalog:", error.message);
             return { metas: [] };
         }
     }
     return { metas: [] };
 });
 
-// --- HANDLER 2: STREAM (Real-Debrid) ---
+// --- GESTIONE STREAM (REAL-DEBRID) ---
 builder.defineStreamHandler(async ({ type, id, config }) => {
     const rdKey = config?.rd;
-    
-    if (!rdKey || !id.startsWith("tmdb:")) {
-        return { streams: [] };
+    const tmdbKey = config?.tmdb;
+
+    if (!rdKey || !tmdbKey) {
+        return { streams: [{ title: "⚠️ Configurazione mancante" }] };
     }
 
-    const tmdbId = id.split(":")[1];
-    console.log(`Richiesto stream per TMDB ID: ${tmdbId}`);
+    console.log(`Richiesta stream per ID: ${id}`);
 
-    // ---------------------------------------------------------
-    // PASSO A: Trovare un Magnet Link / Hash
-    // Qui devi implementare la tua logica per trovare un hash torrent
-    // basandoti sull'ID di TMDB (titolo, anno, etc.)
-    // ---------------------------------------------------------
-    
-    // Esempio fittizio (per far funzionare il codice, devi sostituirlo con la tua ricerca):
-    const magnetLink = "magnet:?xt=urn:btih:ESEMPIO_HASH_TORRENT_DA_CERCARE..."; 
-    // Se non trovi nulla: return { streams: [] };
+    // L'ID arriva come "tmdb:12345", lo puliamo
+    const tmdbId = id.split(":")[1];
 
     try {
-        // ---------------------------------------------------------
-        // PASSO B: Aggiungere a Real-Debrid
-        // ---------------------------------------------------------
+        // 1. Otteniamo i dettagli del film da TMDB per sapere cosa cercare
+        const metaUrl = `https://api.themoviedb.org/3/movie/${tmdbId}?api_key=${tmdbKey}&language=it-IT`;
+        const metaData = await axios.get(metaUrl);
+        const movieTitle = metaData.data.title;
+        const movieYear = metaData.data.release_date.split('-')[0];
+
+        console.log(`Cercando contenuti per: ${movieTitle} (${movieYear})`);
+
+        // =================================================================================
+        // --- [STEP 1] LOGICA DI RICERCA MAGNET (Qui va il tuo codice "Corsanero") ---
+        // =================================================================================
+        // Qui dovresti usare una libreria di scraping o un'altra API per trovare il magnet.
+        // Per ora simulo un magnet (QUESTO NON FUNZIONA SENZA UN MAGNET VERO)
         
-        // 1. Verifica se il file è già nella cache di RD (opzionale ma consigliato)
-        // GET https://api.real-debrid.com/rest/1.0/torrents/instantAvailability/{hash}
-
-        // 2. Aggiungi Magnet a RD
-        const addMagnet = await axios.post(
-            "https://api.real-debrid.com/rest/1.0/torrents/addMagnet", 
-            `magnet=${encodeURIComponent(magnetLink)}`, 
-            { headers: { Authorization: `Bearer ${rdKey}` } }
-        );
+        let magnetLink = null;
         
-        const torrentId = addMagnet.data.id;
+        // TODO: Inserisci qui la logica per cercare "movieTitle" su Corsanero e estrarre il magnet
+        // Esempio: magnetLink = await cercaSuCorsanero(movieTitle);
+        
+        if (!magnetLink) {
+            // Se non trovi nulla, restituiamo lista vuota o un messaggio
+            // Decommenta sotto se vuoi testare con un magnet fisso di prova (Big Buck Bunny)
+            // magnetLink = "magnet:?xt=urn:btih:dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c";
+            return { streams: [{ title: "Nessun link trovato (Implementare ricerca)" }] };
+        }
 
-        // 3. Seleziona i file (in genere "all" o il video principale)
-        await axios.post(
-            "https://api.real-debrid.com/rest/1.0/torrents/selectFiles/" + torrentId,
-            "files=all",
-            { headers: { Authorization: `Bearer ${rdKey}` } }
-        );
+        // =================================================================================
+        // --- [STEP 2] INTEGRAZIONE REAL-DEBRID COMPLETA ---
+        // =================================================================================
+        
+        // A. Aggiungi il Magnet a Real-Debrid
+        const addMagnetUrl = "https://api.real-debrid.com/rest/1.0/torrents/addMagnet";
+        const addResponse = await axios.post(addMagnetUrl, `magnet=${encodeURIComponent(magnetLink)}`, {
+            headers: { Authorization: `Bearer ${rdKey}` }
+        });
+        
+        const torrentId = addResponse.data.id;
+        console.log(`Magnet aggiunto a RD. ID: ${torrentId}`);
 
-        // 4. Ottieni info sul torrent per prendere il link di download
-        const torrentInfo = await axios.get(
-            "https://api.real-debrid.com/rest/1.0/torrents/info/" + torrentId,
-            { headers: { Authorization: `Bearer ${rdKey}` } }
-        );
+        // B. Seleziona tutti i file per avviare il download/cache
+        const selectFilesUrl = `https://api.real-debrid.com/rest/1.0/torrents/selectFiles/${torrentId}`;
+        await axios.post(selectFilesUrl, "files=all", {
+            headers: { Authorization: `Bearer ${rdKey}` }
+        });
 
-        // Prendi il primo link generato (link originale hoster)
-        const originalLink = torrentInfo.data.links[0];
+        // C. Ottieni le info sul torrent (per prendere il link generato)
+        const infoUrl = `https://api.real-debrid.com/rest/1.0/torrents/info/${torrentId}`;
+        const infoResponse = await axios.get(infoUrl, {
+            headers: { Authorization: `Bearer ${rdKey}` }
+        });
 
-        // 5. "Unrestrict" il link (ottieni il link diretto streamabile)
-        const unrestrict = await axios.post(
-            "https://api.real-debrid.com/rest/1.0/unrestrict/link",
-            `link=${originalLink}`,
-            { headers: { Authorization: `Bearer ${rdKey}` } }
-        );
+        // Prendiamo il link del file più grande (spesso è il film principale)
+        const files = infoResponse.data.files;
+        const links = infoResponse.data.links; // Array di link hoster originali
+        
+        // Logica semplice: prendiamo il primo link disponibile generato
+        if (links.length === 0) {
+            return { streams: [{ title: "RD: File non ancora pronto/cachato" }] };
+        }
+        const linkToUnrestrict = links[0];
 
+        // D. Sblocca il link (Unrestrict) per ottenere l'URL diretto mp4/mkv
+        const unrestrictUrl = "https://api.real-debrid.com/rest/1.0/unrestrict/link";
+        const unrestrictResponse = await axios.post(unrestrictUrl, `link=${linkToUnrestrict}`, {
+            headers: { Authorization: `Bearer ${rdKey}` }
+        });
+
+        const directStreamUrl = unrestrictResponse.data.download;
+        const fileName = unrestrictResponse.data.filename;
+        const fileSize = (unrestrictResponse.data.filesize / 1024 / 1024 / 1024).toFixed(2) + " GB";
+
+        // Restituisci lo stream a Stremio
         return {
-            streams: [{
-                title: "⚡ Real-Debrid Stream 1080p",
-                url: unrestrict.data.download,
-                behaviorHints: { notWebReady: false }
-            }]
+            streams: [
+                {
+                    title: `🦄 RD Stream | ${fileSize}\n${fileName}`,
+                    url: directStreamUrl,
+                    behaviorHints: {
+                        notWebReady: false, // True se il codec non è supportato dai browser
+                        bingeGroup: "rd-streams"
+                    }
+                }
+            ]
         };
 
     } catch (error) {
-        console.error("Errore Real-Debrid:", error.response?.data || error.message);
-        return { streams: [{ title: "Errore RD o nessun link trovato" }] };
+        console.error("Errore durante processamento RD:", error.response?.data || error.message);
+        return { streams: [{ title: "Errore API Real-Debrid" }] };
     }
 });
 
-// --- SERVER EXPRESS ---
+// --- ROUTING DEL SERVER ---
 const addonInterface = builder.getInterface();
 
-// Route per la pagina di configurazione
 app.get('/', (req, res) => {
-    res.sendFile(path.join(__dirname, 'public', 'configure.html'));
+    res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-// Route per il manifest con configurazione
+// Gestione Manifest dinamico
 app.get('/:userConf/manifest.json', (req, res) => {
     const userConf = req.params.userConf;
     const config = getConfig(userConf);
-    // Cloniamo il manifest per non modificare l'originale globale
-    const responseManifest = { ...manifest };
+    const newManifest = { ...manifest };
     
-    // Se la configurazione è valida, non chiediamo più di configurare
+    // Se configurato, non chiedere più setup
     if (config.tmdb && config.rd) {
-        responseManifest.behaviorHints = { configurable: true, configurationRequired: false };
+        newManifest.behaviorHints = { configurable: true, configurationRequired: false };
     }
-    
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Headers', '*');
-    res.send(responseManifest);
+    res.send(newManifest);
 });
 
-// Route per tutte le risorse (catalog, stream, meta)
-app.use('/:userConf', (req, res, next) => {
+// Gestione richieste addon (Catalog, Stream)
+app.use('/:userConf', (req, res) => {
     const userConf = req.params.userConf;
     const config = getConfig(userConf);
-    
-    // Passiamo la configurazione al router dell'SDK
-    addonInterface(req, res, () => {
-        res.status(404).send();
-    }, { config });
+    addonInterface(req, res, () => res.status(404).send(), { config });
 });
 
 const port = process.env.PORT || 7000;
 app.listen(port, () => {
-    console.log(`Addon attivo sulla porta ${port}`);
+    console.log(`Addon attivo su http://localhost:${port}`);
 });
