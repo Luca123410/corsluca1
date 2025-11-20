@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   stremio-addon:
     build: .
@@ -10,3 +8,12 @@ services:
     environment:
       - PORT=7000
       - NODE_ENV=production
+   
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+
+
+
+
+
