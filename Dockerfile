@@ -1,5 +1,5 @@
-# Usa un'immagine Node leggera
-FROM node:18-alpine
+# Usa Node 20 (necessario per supportare l'oggetto File globale)                                         M-6 Copy
+FROM node:20-alpine
 
 # Imposta la directory di lavoro
 WORKDIR /app
@@ -10,11 +10,14 @@ COPY package*.json ./
 # Installa le dipendenze
 RUN npm install --production
 
-# Copia il resto del codice (addon.js, rd.js, corsaro.js, public/)
+# Copia il resto del codice
 COPY . .
 
-# Espone la porta usata dall'addon
+# Espone la porta
 EXPOSE 7000
 
 # Comando di avvio
 CMD ["npm", "start"]
+
+
+
