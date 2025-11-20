@@ -9,11 +9,10 @@
             --bg-color: #141414;
             --card-bg: #1f1f1f;
             --text-color: #e0e0e0;
-            --accent-color: #6a5acd; /* SlateBlue simile a Stremio */
-            --accent-hover: #5848b7;
+            --accent-color: #7b68ee; /* MediumSlateBlue */
+            --accent-hover: #6a5acd;
             --input-bg: #2a2a2a;
             --border-color: #333;
-            --success-color: #28a745;
         }
 
         body {
@@ -30,52 +29,22 @@
 
         .container {
             background-color: var(--card-bg);
-            padding: 2rem;
+            padding: 2.5rem;
             border-radius: 12px;
-            box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+            box-shadow: 0 10px 30px rgba(0,0,0,0.6);
             width: 100%;
-            max-width: 500px;
+            max-width: 480px;
             text-align: center;
         }
 
-        h1 {
-            margin-bottom: 0.5rem;
-            color: white;
-        }
+        h1 { margin: 0 0 10px 0; color: white; }
+        
+        .subtitle { color: #aaa; font-size: 0.9rem; margin-bottom: 2rem; }
 
-        p.subtitle {
-            color: #aaa;
-            margin-bottom: 2rem;
-            font-size: 0.9rem;
-        }
-
-        .form-group {
-            margin-bottom: 1.5rem;
-            text-align: left;
-        }
-
-        label {
-            display: block;
-            margin-bottom: 0.5rem;
-            font-weight: 600;
-            font-size: 0.9rem;
-        }
-
-        .help-text {
-            font-size: 0.75rem;
-            color: #888;
-            margin-top: 0.25rem;
-        }
-
-        .help-text a {
-            color: var(--accent-color);
-            text-decoration: none;
-        }
-
-        .help-text a:hover {
-            text-decoration: underline;
-        }
-
+        .form-group { margin-bottom: 1.5rem; text-align: left; }
+        
+        label { display: block; margin-bottom: 0.5rem; font-weight: 600; font-size: 0.9rem; color: #ddd; }
+        
         input[type="text"] {
             width: 100%;
             padding: 12px;
@@ -84,21 +53,15 @@
             border-radius: 6px;
             color: white;
             font-size: 1rem;
-            box-sizing: border-box;
-            transition: border-color 0.2s;
+            box-sizing: border-box; /* Importante per il padding */
         }
 
-        input[type="text"]:focus {
-            outline: none;
-            border-color: var(--accent-color);
-        }
+        input:focus { outline: none; border-color: var(--accent-color); }
 
-        .actions {
-            display: flex;
-            flex-direction: column;
-            gap: 10px;
-            margin-top: 2rem;
-        }
+        .help-text { font-size: 0.75rem; color: #777; margin-top: 5px; }
+        .help-text a { color: var(--accent-color); text-decoration: none; }
+
+        .buttons { display: flex; flex-direction: column; gap: 12px; margin-top: 2rem; }
 
         button {
             padding: 14px;
@@ -107,127 +70,92 @@
             font-size: 1rem;
             font-weight: 600;
             cursor: pointer;
-            transition: background 0.2s, transform 0.1s;
+            transition: all 0.2s;
         }
 
-        button:active {
-            transform: scale(0.98);
-        }
+        #installBtn { background-color: var(--accent-color); color: white; }
+        #installBtn:hover { background-color: var(--accent-hover); transform: translateY(-1px); }
 
-        #installBtn {
-            background-color: var(--accent-color);
-            color: white;
-        }
+        #copyBtn { background-color: transparent; border: 1px solid #444; color: #ccc; }
+        #copyBtn:hover { border-color: #888; color: white; }
 
-        #installBtn:hover {
-            background-color: var(--accent-hover);
-        }
-
-        #copyBtn {
-            background-color: transparent;
-            border: 1px solid var(--border-color);
-            color: #aaa;
-        }
-
-        #copyBtn:hover {
-            background-color: rgba(255,255,255,0.05);
-            color: white;
-        }
-
-        .hidden {
-            display: none;
-        }
-
-        #message {
-            margin-top: 1rem;
-            font-size: 0.9rem;
-            min-height: 1.2em;
-        }
+        #message { margin-top: 15px; font-size: 0.85rem; min-height: 20px; }
     </style>
 </head>
 <body>
 
     <div class="container">
         <h1>Setup Addon</h1>
-        <p class="subtitle">Inserisci le tue chiavi API per configurare l'addon.</p>
+        <p class="subtitle">Corsaro Nero & Real-Debrid</p>
 
         <div class="form-group">
-            <label for="tmdb">TMDB API Key (v3)</label>
-            <input type="text" id="tmdb" placeholder="Es. a1b2c3d4..." autocomplete="off">
-            <div class="help-text">
-                Necessaria per locandine e metadati. <br>
-                <a href="https://www.themoviedb.org/settings/api" target="_blank">Ottieni API Key TMDB ↗</a>
-            </div>
+            <label>TMDB API Key</label>
+            <input type="text" id="tmdb" placeholder="Inserisci API Key TMDB">
+            <div class="help-text"><a href="https://www.themoviedb.org/settings/api" target="_blank">Prendila qui ↗</a></div>
         </div>
 
         <div class="form-group">
-            <label for="rd">Real-Debrid API Token</label>
-            <input type="text" id="rd" placeholder="Es. F4R5..." autocomplete="off">
-            <div class="help-text">
-                Necessaria per lo sblocco dei link. <br>
-                <a href="https://real-debrid.com/apitoken" target="_blank">Ottieni Token Real-Debrid ↗</a>
-            </div>
+            <label>Real-Debrid Token</label>
+            <input type="text" id="rd" placeholder="Inserisci Token RD">
+            <div class="help-text"><a href="https://real-debrid.com/apitoken" target="_blank">Prendilo qui ↗</a></div>
         </div>
 
-        <div class="actions">
+        <div class="buttons">
             <button id="installBtn" onclick="install()">🚀 Installa su Stremio</button>
-            <button id="copyBtn" onclick="copyLink()">📋 Copia Link Installazione</button>
+            <button id="copyBtn" onclick="copyLink()">📋 Copia Link</button>
         </div>
 
         <div id="message"></div>
     </div>
 
     <script>
-        function getManifestUrl() {
+        function generateStremioLink() {
             const tmdb = document.getElementById('tmdb').value.trim();
             const rd = document.getElementById('rd').value.trim();
 
             if (!tmdb || !rd) {
-                showMessage("⚠️ Inserisci entrambe le chiavi per continuare.", "red");
+                showMessage("⚠️ Compila tutti i campi!", "#ffcc00");
                 return null;
             }
 
+            // Creiamo la configurazione
             const config = { tmdb, rd };
-            // Codifica la configurazione in Base64
-            const configStr = JSON.stringify(config);
-            const configB64 = btoa(configStr);
+            const configB64 = btoa(JSON.stringify(config));
 
-            const protocol = window.location.protocol;
+            // Otteniamo l'host corrente (es. omg-luca.ydns.eu)
             const host = window.location.host;
             
-            // Costruzione URL finale
-            // Esempio: http://localhost:7000/BASE64STRING/manifest.json
-            return `${protocol}//${host}/${configB64}/manifest.json`;
+            // Costruiamo l'URL
+            // NOTA: Usiamo SEMPRE stremio:// per evitare l'errore "Unsupported protocol"
+            // Nginx Proxy Manager gestirà il traffico HTTPS anche se il link inizia così.
+            return `stremio://${host}/${configB64}/manifest.json`;
         }
 
         function install() {
-            const manifestUrl = getManifestUrl();
-            if (!manifestUrl) return;
-
-            // Cambia protocollo da http/https a stremio://
-            const stremioUrl = manifestUrl.replace(/^http/, 'stremio');
-            window.location.href = stremioUrl;
+            const link = generateStremioLink();
+            if (link) {
+                window.location.href = link;
+            }
         }
 
         function copyLink() {
-            const manifestUrl = getManifestUrl();
-            if (!manifestUrl) return;
+            const link = generateStremioLink();
+            if (!link) return;
 
-            const stremioUrl = manifestUrl.replace(/^http/, 'stremio');
-            
-            navigator.clipboard.writeText(stremioUrl).then(() => {
-                showMessage("✅ Link copiato negli appunti!", "#28a745");
-            }, () => {
-                showMessage("❌ Errore nella copia.", "red");
+            navigator.clipboard.writeText(link).then(() => {
+                showMessage("✅ Copiato! Incollalo nella ricerca di Stremio.", "#4caf50");
+            }).catch(() => {
+                showMessage("❌ Errore copia.", "#f44336");
             });
         }
 
         function showMessage(text, color) {
             const msg = document.getElementById('message');
-            msg.style.color = color || 'white';
+            msg.style.color = color;
             msg.innerText = text;
-            setTimeout(() => { msg.innerText = ""; }, 4000);
+            setTimeout(() => msg.innerText = "", 4000);
         }
     </script>
+
 </body>
 </html>
