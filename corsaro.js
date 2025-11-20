@@ -10,40 +10,38 @@ const headers = {
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
 };
 
+// CONFIGURAZIONE FILTRO
+const MIN_SIZE_BYTES = 300 * 1024 * 1024; // 300 MB
+
 async function searchMagnet(title, year) {
     try {
         const cleanTitle = title.replace(/[^a-zA-Z0-9 ]/g, " ").trim();
         const searchUrl = `${CORSARO_URL}/search?q=${encodeURIComponent(cleanTitle)}`;
         
-        console.log(`\n--- [MULTI DEEP SEARCH] ---`);
+        console.log(`\n--- [MULTI DEEP SEARCH - FIX SIZE] ---`);
         console.log(`🔎 Lista: ${searchUrl}`);
 
-        // 1. Scarica la lista dei risultati
         const { data } = await axios.get(searchUrl, { headers, httpsAgent, timeout: 10000 });
         
         if (data.includes("Cloudflare")) {
-            console.error("⛔ Cloudflare Blocco.");
+            console.error("⛔ Blocco Cloudflare.");
             return [];
         }
 
         const $ = cheerio.load(data);
         let potentialItems = [];
 
-        // 2. Raccogli i link ai dettagli (Max 5-6 per non bloccare tutto)
+        // 1. Raccogli link
         $('a').each((i, elem) => {
-            if (potentialItems.length >= 6) return; // Limite per velocità
+            if (potentialItems.length >= 8) return; 
 
             const href = $(elem).attr('href');
             const text = $(elem).text().trim();
 
-            // Cerchiamo link che portano a /torrent/ o details.php
             if (href && (href.includes('/torrent/') || href.includes('details.php'))) {
-                // Filtro Anno (se presente nella richiesta)
                 if (year && !text.toLowerCase().includes(year) && !text.toLowerCase().includes(cleanTitle.toLowerCase())) return;
 
                 let fullUrl = href.startsWith('http') ? href : `${CORSARO_URL}${href.startsWith('/') ? '' : '/'}${href}`;
-                
-                // Evita duplicati
                 if (!potentialItems.some(p => p.url === fullUrl)) {
                     potentialItems.push({ url: fullUrl, title: text });
                 }
@@ -53,63 +51,72 @@ async function searchMagnet(title, year) {
         console.log(`   ⚡ Trovati ${potentialItems.length} candidati. Scansione dettagli...`);
 
         if (potentialItems.length === 0) {
-            // TENTATIVO EXTRA: Magari ci sono magnet diretti nella home (vecchia struttura)
             const directMagnet = $('a[href^="magnet:?"]').first().attr('href');
             if (directMagnet) {
-                console.log("   ⚠️ Trovato un solo magnet diretto (Fallback).");
-                // Restituiamo un array con un solo elemento
-                return [{
-                    title: title,
-                    magnet: directMagnet,
-                    size: "?? GB",
-                    sizeBytes: 0
-                }];
+                return [{ title: title, magnet: directMagnet, size: "?? GB", sizeBytes: 999999999 }];
             }
             return [];
         }
 
-        // 3. Scansione Parallela delle pagine di dettaglio
+        // 2. Scansione e Parsing Dimensione (Più robusto)
         const promises = potentialItems.map(async (item) => {
             try {
                 const detailPage = await axios.get(item.url, { headers, httpsAgent, timeout: 8000 });
                 const $d = cheerio.load(detailPage.data);
                 
-                // Prendi il magnet dalla pagina dettaglio
                 const magnet = $d('a[href^="magnet:?"]').first().attr('href');
-                
                 if (!magnet) return null;
 
-                // Cerca dimensione
                 const bodyText = $d('body').text();
-                const sizeMatch = bodyText.match(/Dimensioni:?\s*(\d+(\.\d+)?\s?(GB|MB|KB))/i);
-                let sizeStr = sizeMatch ? sizeMatch[1] : "??";
                 
-                // Calcola bytes per ordinamento
+                // FIX: Regex più permissiva (cerca sia "Dimensioni" che pattern numerici diretti con GB/MB)
+                const sizeMatch = bodyText.match(/(Dimensioni|Size)?:?\s*(\d+(\.\d+)?\s?(GB|MB|KB))/i);
+                let sizeStr = "??";
                 let sizeBytes = 0;
-                if (sizeStr.toUpperCase().includes("GB")) sizeBytes = parseFloat(sizeStr) * 1024**3;
-                else if (sizeStr.toUpperCase().includes("MB")) sizeBytes = parseFloat(sizeStr) * 1024**2;
+
+                if (sizeMatch) {
+                    // sizeMatch[0] è tutto il match, sizeMatch[2] è la parte numerica + unità (es "1.4 GB")
+                    // Dobbiamo trovare quale gruppo ha catturato il numero. Di solito è l'ultimo gruppo non nullo.
+                    const rawSize = sizeMatch[0].toUpperCase(); 
+                    sizeStr = sizeMatch[2] || "??"; 
+                    
+                    const numMatch = sizeStr.match(/(\d+(\.\d+)?)/);
+                    const num = numMatch ? parseFloat(numMatch[0]) : 0;
+
+                    if (rawSize.includes("GB")) sizeBytes = num * 1024**3;
+                    else if (rawSize.includes("MB")) sizeBytes = num * 1024**2;
+                    else if (rawSize.includes("KB")) sizeBytes = num * 1024;
+                }
+
+                // DEBUG: Vediamo cosa ha letto
+                // console.log(`   📄 ${item.title.substring(0,15)}... -> Letto: ${sizeStr} (${sizeBytes} bytes)`);
+
+                // --- FILTRO MODIFICATO ---
+                // Se sizeBytes è 0 (non siamo riusciti a leggere), ACCETTALO comunque (meglio un falso positivo che niente)
+                // Se sizeBytes > 0 MA minore di 300MB, SCARTALO (è sicuramente fake/ost)
+                if (sizeBytes > 0 && sizeBytes < MIN_SIZE_BYTES) {
+                    console.log(`   🗑️ Scartato (Troppo piccolo): ${sizeStr}`);
+                    return null; 
+                }
 
                 return {
                     title: item.title,
                     magnet: magnet,
                     size: sizeStr,
-                    sizeBytes: sizeBytes
+                    sizeBytes: sizeBytes || 999999999999 // Se 0, mettilo in cima alla lista per sicurezza
                 };
             } catch (e) { return null; }
         });
 
-        // Attendi tutti
         const results = (await Promise.all(promises)).filter(r => r !== null);
-
-        // Ordina per grandezza
         results.sort((a, b) => b.sizeBytes - a.sizeBytes);
 
         console.log(`✅ Estratti ${results.length} risultati validi.`);
-        return results; // ORA È UN ARRAY!
+        return results;
 
     } catch (error) {
         console.error("🔥 Errore Scraping:", error.message);
-        return []; // Ritorna array vuoto su errore
+        return [];
     }
 }
 
