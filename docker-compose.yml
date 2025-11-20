@@ -1,0 +1,12 @@
+version: '3.8'
+
+services:
+  stremio-addon:
+    build: .
+    container_name: my-stremio-addon
+    restart: always
+    ports:
+      - "7000:7000"
+    environment:
+      - PORT=7000
+      - NODE_ENV=production
