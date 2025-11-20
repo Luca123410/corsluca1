@@ -1,4 +1,3 @@
-const { addonBuilder } = require("stremio-addon-sdk");
 const express = require("express");
 const cors = require("cors");
 const path = require("path");
@@ -11,16 +10,17 @@ const app = express();
 app.use(cors());
 app.use(express.static(path.join(__dirname, 'public')));
 
+// Logger
 app.use((req, res, next) => {
     if (req.url.includes('/stream/')) console.log(`\n📨 REQ: ${req.method} ${req.url}`);
     next();
 });
 
 const manifest = {
-    id: "org.community.corsaro-turbo",
-    version: "1.7.0",
-    name: "Corsaro & RD (Turbo)",
-    description: "Ricerca Italiana Ottimizzata",
+    id: "org.community.corsaro-truth",
+    version: "2.0.0",
+    name: "Corsaro & RD (Truth)",
+    description: "Ricerca verificata da Real-Debrid",
     resources: ["catalog", "stream"],
     types: ["movie", "series"],
     catalogs: [{ type: "movie", id: "tmdb_trending", name: "Popolari Italia" }],
@@ -28,15 +28,21 @@ const manifest = {
     behaviorHints: { configurable: true, configurationRequired: true }
 };
 
-const builder = new addonBuilder(manifest);
-
-// --- VELOCITÀ AUMENTATA ---
-// 250ms è il punto dolce: abbastanza lento da non arrabbiare RD, abbastanza veloce per l'utente
 const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
+// FILTRO REALE: Se Real-Debrid dice che il file è sotto i 250MB, lo nascondiamo.
+const REAL_SIZE_FILTER = 250 * 1024 * 1024; 
+
+function formatBytes(bytes) {
+    if (!+bytes) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return `${parseFloat((bytes / Math.pow(k, i)).toFixed(2))} ${sizes[i]}`;
+}
+
 function getConfig(configStr) {
-    try { return JSON.parse(Buffer.from(configStr, 'base64').toString()); } 
-    catch (e) { return {}; }
+    try { return JSON.parse(Buffer.from(configStr, 'base64').toString()); } catch (e) { return {}; }
 }
 
 async function getMovieData(id, tmdbKey) {
@@ -59,7 +65,7 @@ async function getMovieData(id, tmdbKey) {
     } catch (e) { return null; }
 }
 
-// --- CATALOGO ---
+// CATALOGO
 async function generateCatalog(type, id, config) {
     if (id === "tmdb_trending" && config?.tmdb) {
         try {
@@ -72,7 +78,7 @@ async function generateCatalog(type, id, config) {
     return { metas: [] };
 }
 
-// --- STREAM ---
+// STREAM
 async function generateStream(type, id, config) {
     const { rd, tmdb } = config || {};
     console.log(`⚡ ID: ${id}`);
@@ -94,37 +100,52 @@ async function generateStream(type, id, config) {
 
         if (results.length === 0) return { streams: [{ title: "🚫 Nessun risultato trovato" }] };
 
-        const topResults = results.slice(0, 4);
-        console.log(`   🚀 Elaborazione rapida di ${topResults.length} risultati...`);
+        // Prendiamo più risultati da analizzare (fino a 8) perché ora filtriamo dopo
+        const topResults = results.slice(0, 8);
+        console.log(`   🚀 Verifico ${topResults.length} magnet con Real-Debrid...`);
 
         let streams = [];
+        let validCount = 0;
 
         for (const item of topResults) {
             try {
+                // Chiediamo a RD
                 const streamData = await RD.getStreamLink(rd, item.magnet);
                 
                 if (streamData) {
+                    // ORA ABBIAMO LA VERITÀ: streamData.size è la dimensione reale del file video su RD
+                    
+                    // FILTRO REALE
+                    if (streamData.size < REAL_SIZE_FILTER) {
+                        console.log(`      🗑️ SCARTATO FAKE/PICCOLO: ${formatBytes(streamData.size)} - ${item.title.substring(0,15)}...`);
+                        continue; // Salta questo risultato
+                    }
+
+                    let info = "";
+                    if (streamData.type === 'ready') info = `✅ PRONTO | ${formatBytes(streamData.size)}`;
+                    else info = `⏳ DOWNLOAD | ${streamData.progress}%`;
+
                     streams.push({
                         name: `RD | Corsaro`,
-                        title: `${item.title}\n📦 ${item.size} | 💾 ${streamData.filename}`,
-                        url: streamData.url,
+                        title: `${item.title}\n${info}\n📄 ${streamData.filename}`,
+                        url: streamData.url || "", // URL vuoto se in download, ma Stremio lo mostrerà
                         behaviorHints: { notWebReady: false }
                     });
-                    console.log(`      ✅ OK: ${item.title.substring(0, 20)}...`);
-                } else {
-                    console.log(`      ⚠️ Cache Miss (Download Avviato su RD)`);
-                }
+                    
+                    validCount++;
+                    console.log(`      ✅ OK (${formatBytes(streamData.size)}): ${item.title.substring(0, 20)}...`);
+                    
+                    // Se abbiamo trovato 4 risultati validi, ci fermiamo per non rallentare troppo
+                    if (validCount >= 4) break;
 
-                // Attesa ridotta a 250ms
-                await wait(250); 
+                } 
+                await wait(200); 
 
-            } catch (e) {
-                // Ignora silenziosamente errori su singoli link
-            }
+            } catch (e) {}
         }
 
         if (streams.length === 0) {
-            return { streams: [{ title: "⚠️ Trovati file, ma download in corso su RD... Riprova tra poco." }] };
+            return { streams: [{ title: "🚫 Nessun file valido sopra i 250MB trovato." }] };
         }
 
         return { streams };
@@ -135,7 +156,7 @@ async function generateStream(type, id, config) {
     }
 }
 
-// --- ROUTING ---
+// ROUTING
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 
 app.get('/:userConf/manifest.json', (req, res) => {
@@ -158,4 +179,4 @@ app.get('/:userConf/stream/:type/:id.json', async (req, res) => {
     res.json(result);
 });
 
-app.listen(process.env.PORT || 7000, () => console.log("Addon Attivo v1.7.0 (Turbo)"));
+app.listen(process.env.PORT || 7000, () => console.log("Addon Attivo v2.0.0 (Truth Filter)"));
