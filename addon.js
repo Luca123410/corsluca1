@@ -18,10 +18,10 @@ app.use((req, res, next) => {
 });
 
 const manifest = {
-    id: "org.community.corsaro-stable-final-v2",
-    version: "10.1.0",
-    name: "Corsaro & TPB (FINAL)",
-    description: "Sistema stabile e pulito",
+    id: "org.community.corsaro-filter",
+    version: "12.0.0",
+    name: "Corsaro & TPB (Final Filter)",
+    description: "Filtro unificato di qualità",
     resources: ["catalog", "stream"],
     types: ["movie", "series"],
     catalogs: [{ type: "movie", id: "tmdb_trending", name: "Popolari Italia" }],
@@ -64,7 +64,55 @@ async function getMovieData(id, tmdbKey) {
     } catch (e) { return null; }
 }
 
-// CATALOGO e ROUTING INIZIALE omessi per brevità
+// --- NUOVA FUNZIONE DI FILTRO AVANZATO (Basata sulla logica APIBAY) ---
+function applyAdvancedFilters(items, year) {
+    const resultsMap = new Map();
+    const currentYear = parseInt(year);
+
+    const checkKeywords = (nameUpper) => {
+        return nameUpper.includes("ITA") || nameUpper.includes("ITALIAN") || nameUpper.includes("MULTI") || nameUpper.includes("DUAL") || nameUpper.includes("MD") || nameUpper.includes("SUB ITA") || nameUpper.includes("SUB-ITA") || nameUpper.includes("AC3 ITA") || nameUpper.includes("DTS ITA") || nameUpper.includes("FORCED ITA");
+    };
+
+    for (const item of items) {
+        const nameUpper = item.title.toUpperCase();
+
+        // 1. Filtro Lingua: Applica il filtro rigido APIBAY a TUTTI
+        if (!checkKeywords(nameUpper)) continue;
+
+        // 2. Filtro Anno Flessibile (Saltiamo solo se l'anno è molto diverso)
+        if (year && currentYear) {
+            if (![currentYear - 1, currentYear, currentYear + 1].some(ay => item.title.includes(ay))) {
+                // Se non c'è l'anno esatto o +/- 1 anno, lo scartiamo
+                if (!item.source.includes("Corsaro")) continue; // Solo Corsaro ha un po' di tolleranza
+            }
+        }
+        
+        // 3. Deduplicazione (Priorità Seeders > Dimensione)
+        const hash = item.magnet.match(/btih:([a-zA-Z0-9]{40})/);
+        if (!hash) continue; // Hash malformato
+
+        if (resultsMap.has(hash[1])) {
+            const existing = resultsMap.get(hash[1]);
+            // Prioritizza i seeders se ci sono, altrimenti la dimensione
+            if (item.seeders && existing.seeders && item.seeders <= existing.seeders) continue;
+            if (item.sizeBytes <= existing.sizeBytes && !item.seeders) continue;
+        }
+
+        resultsMap.set(hash[1], item);
+    }
+
+    const finalResults = Array.from(resultsMap.values());
+    
+    // Ordina (per seeders e dimensione)
+    finalResults.sort((a, b) => {
+        if ((a.seeders || 0) !== (b.seeders || 0)) return b.seeders - a.seeders;
+        return b.sizeBytes - a.sizeBytes;
+    });
+
+    return finalResults;
+}
+
+// CATALOGO e routing omessi per brevità...
 
 // STREAM
 app.get('/:userConf/stream/:type/:id.json', async (req, res) => {
@@ -88,41 +136,31 @@ app.get('/:userConf/stream/:type/:id.json', async (req, res) => {
         let allResults = [...corsaroRes, ...apiRes];
 
         if (allResults.length === 0 && movie.title !== movie.originalTitle) {
-            console.log(`   ⚠️ Fallback titolo originale...`);
             const [corsaroOrig, apiOrig] = await Promise.all([
                 Corsaro.searchMagnet(movie.originalTitle, movie.year),
                 Apibay.searchMagnet(movie.originalTitle, movie.year)
             ]);
             allResults = [...corsaroOrig, ...apiOrig];
         }
+        
+        // --- APPLICA IL FILTRO AVANZATO AI RISULTATI GREZZI ---
+        const uniqueResults = applyAdvancedFilters(allResults, movie.year);
 
-        if (allResults.length === 0) return res.json({ streams: [] });
-
-        // De-duplicate
-        const uniqueResults = [];
-        const magnetSet = new Set();
-        for (const item of allResults) {
-            if (!magnetSet.has(item.magnet)) {
-                magnetSet.add(item.magnet);
-                uniqueResults.push(item);
-            }
+        if (uniqueResults.length === 0) {
+             console.log("   🚫 Tutti i magnet ITA sono stati filtrati (troppo vecchi/mancano keyword).");
+             return res.json({ streams: [{ title: "🚫 Nessun file valido ITA/MULTI." }] });
         }
-
-        // --- NUOVO ORDINAMENTO: Priorità a Seeders > Dimensione ---
+        
         uniqueResults.sort((a, b) => {
-            // Corsaro non ha seeders, quindi li forziamo a 0 per la comparazione
             const aSeeders = a.seeders || 0;
             const bSeeders = b.seeders || 0;
 
-            // 1. Ordina per Seeders (dal più alto)
             if (aSeeders !== bSeeders) return bSeeders - aSeeders;
-            
-            // 2. Poi ordina per Dimensione
             return b.sizeBytes - a.sizeBytes;
         });
-        
+
         const topResults = uniqueResults.slice(0, 15);
-        console.log(`   🚀 Verifico ${topResults.length} magnet (Max ${uniqueResults.length})...`);
+        console.log(`   🚀 Verifico ${topResults.length} magnet (Finali).`);
 
         let streams = [];
 
@@ -131,39 +169,45 @@ app.get('/:userConf/stream/:type/:id.json', async (req, res) => {
                 const streamData = await RD.getStreamLink(config.rd, item.magnet);
                 
                 if (streamData) {
-                    // FILTRO REALE DIMENSIONE
                     if (streamData.size < REAL_SIZE_FILTER) {
-                         console.log(`      🗑️ SCARTATO [${item.source}]: File troppo piccolo (${formatBytes(streamData.size)}).`);
+                        console.log(`      🗑️ SCARTATO [${item.source}]: File troppo piccolo.`);
                         continue;
                     }
 
                     let info = streamData.type === 'ready' ? `✅ PRONTO | ${formatBytes(streamData.size)}` : `⏳ DOWNLOAD ${streamData.progress}%`;
-                    let sourceTag = item.source === "Corsaro" ? "🇮🇹 Corsaro" : "🌍 PirateBay";
+                    let sourceTag = item.source === "Corsaro" ? "RD | Corsaro 🇮🇹" : "RD | PirateBay 🏴‍☠️";
 
                     streams.push({
-                        name: `RD | ${sourceTag}`,
-                        title: `${item.title}\n${info} | 📦 ${formatBytes(streamData.size)}\n📄 ${streamData.filename}`,
+                        name: sourceTag,
+                        title: `${item.title}\n${info}\n📄 ${streamData.filename}`,
                         url: streamData.url || "",
                         behaviorHints: { notWebReady: false }
                     });
                     
                     if(streamData.type === 'ready') console.log(`      ✅ OK [${item.source}]: ${item.title.substring(0, 20)}...`);
                 } else {
-                    // Log dei fallimenti (i magnet che hai visto sparire)
-                    console.log(`      ❌ FALLO MAGNET [${item.source}]: Link non valido o morto.`);
+                    console.log(`      ❌ FALLO MAGNET [${item.source}]: Link morto/corrotto. (Passo al successivo)`);
                 }
                 
                 await wait(200);
             } catch (e) {}
         }
 
-        // Resto del codice omesso per brevità...
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.json({ streams });
 
     } catch (e) {
         res.json({ streams: [] });
     }
 });
 
-// ROUTING E ALTRI HANDLERS omessi per brevità, sono identici al codice precedente.
-// Se hai bisogno del file intero, chiedi pure.
-// ...
+// ROUTING INIZIALE E LISTEN (omessi per brevità)
+app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
+app.get('/:userConf/manifest.json', (req, res) => {
+    const config = getConfig(req.params.userConf);
+    const m = { ...manifest };
+    if (config.tmdb && config.rd) m.behaviorHints = { configurable: true, configurationRequired: false };
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.json(m);
+});
+app.listen(process.env.PORT || 7000, () => console.log("Addon STABILISSIMO (Final) Ready!"));
