@@ -11,17 +11,16 @@ const app = express();
 app.use(cors());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Logger pulito
 app.use((req, res, next) => {
     if (req.url.includes('/stream/')) console.log(`\n📨 REQ: ${req.method} ${req.url}`);
     next();
 });
 
 const manifest = {
-    id: "org.community.corsaro-pro-stable",
-    version: "1.6.0",
-    name: "Corsaro & RD (Stable)",
-    description: "Ricerca Italiana Stabile",
+    id: "org.community.corsaro-turbo",
+    version: "1.7.0",
+    name: "Corsaro & RD (Turbo)",
+    description: "Ricerca Italiana Ottimizzata",
     resources: ["catalog", "stream"],
     types: ["movie", "series"],
     catalogs: [{ type: "movie", id: "tmdb_trending", name: "Popolari Italia" }],
@@ -31,7 +30,8 @@ const manifest = {
 
 const builder = new addonBuilder(manifest);
 
-// Helper per aspettare (Sleep)
+// --- VELOCITÀ AUMENTATA ---
+// 250ms è il punto dolce: abbastanza lento da non arrabbiare RD, abbastanza veloce per l'utente
 const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 function getConfig(configStr) {
@@ -72,7 +72,7 @@ async function generateCatalog(type, id, config) {
     return { metas: [] };
 }
 
-// --- STREAM (Con Rate Limit per RD) ---
+// --- STREAM ---
 async function generateStream(type, id, config) {
     const { rd, tmdb } = config || {};
     console.log(`⚡ ID: ${id}`);
@@ -85,7 +85,6 @@ async function generateStream(type, id, config) {
 
         console.log(`   🎬 Cerca: "${movie.title}" (${movie.year})`);
         
-        // 1. Cerca Magnet
         let results = await Corsaro.searchMagnet(movie.title, movie.year);
 
         if (results.length === 0 && movie.title !== movie.originalTitle) {
@@ -95,17 +94,13 @@ async function generateStream(type, id, config) {
 
         if (results.length === 0) return { streams: [{ title: "🚫 Nessun risultato trovato" }] };
 
-        // 2. LIMITA I RISULTATI (Importante per non andare in timeout)
-        // Prendiamo solo i primi 4 risultati migliori per non far aspettare troppo l'utente
         const topResults = results.slice(0, 4);
-        console.log(`   🚀 Elaborazione sequenziale di ${topResults.length} risultati (per evitare blocchi RD)...`);
+        console.log(`   🚀 Elaborazione rapida di ${topResults.length} risultati...`);
 
         let streams = [];
 
-        // 3. CICLO SEQUENZIALE (Uno alla volta + Pausa)
         for (const item of topResults) {
             try {
-                // Chiamata a RD
                 const streamData = await RD.getStreamLink(rd, item.magnet);
                 
                 if (streamData) {
@@ -117,21 +112,19 @@ async function generateStream(type, id, config) {
                     });
                     console.log(`      ✅ OK: ${item.title.substring(0, 20)}...`);
                 } else {
-                    // Se RD ritorna null, il file non è cachato o c'è stato un errore
-                    // Opzionale: potremmo aggiungere un link "Download to RD" qui
-                    console.log(`      ⚠️ Cache Miss: ${item.title.substring(0, 20)}...`);
+                    console.log(`      ⚠️ Cache Miss (Download Avviato su RD)`);
                 }
 
-                // PAUSA DI 500ms tra una richiesta e l'altra per non far arrabbiare RD
-                await wait(500); 
+                // Attesa ridotta a 250ms
+                await wait(250); 
 
             } catch (e) {
-                console.error(`      ❌ Errore su un link: ${e.message}`);
+                // Ignora silenziosamente errori su singoli link
             }
         }
 
         if (streams.length === 0) {
-            return { streams: [{ title: "⚠️ Trovati torrent, ma nessuno in cache RD (Download avviato)" }] };
+            return { streams: [{ title: "⚠️ Trovati file, ma download in corso su RD... Riprova tra poco." }] };
         }
 
         return { streams };
@@ -165,4 +158,4 @@ app.get('/:userConf/stream/:type/:id.json', async (req, res) => {
     res.json(result);
 });
 
-app.listen(process.env.PORT || 7000, () => console.log("Addon Attivo v1.6.0 (Rate Limit Safe)"));
+app.listen(process.env.PORT || 7000, () => console.log("Addon Attivo v1.7.0 (Turbo)"));
