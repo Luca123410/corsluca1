@@ -1,4 +1,4 @@
-const { addonBuilder, getRouter } = require("stremio-addon-sdk");
+const { addonBuilder } = require("stremio-addon-sdk");
 const express = require("express");
 const cors = require("cors");
 const path = require("path");
@@ -11,17 +11,17 @@ const app = express();
 app.use(cors());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// LOGGER
+// Logger pulito
 app.use((req, res, next) => {
     if (req.url.includes('/stream/')) console.log(`\n📨 REQ: ${req.method} ${req.url}`);
     next();
 });
 
 const manifest = {
-    id: "org.community.corsaro-multi",
-    version: "1.5.0",
-    name: "Corsaro Multi-Result",
-    description: "Risultati Multipli ITA",
+    id: "org.community.corsaro-pro-stable",
+    version: "1.6.0",
+    name: "Corsaro & RD (Stable)",
+    description: "Ricerca Italiana Stabile",
     resources: ["catalog", "stream"],
     types: ["movie", "series"],
     catalogs: [{ type: "movie", id: "tmdb_trending", name: "Popolari Italia" }],
@@ -30,6 +30,9 @@ const manifest = {
 };
 
 const builder = new addonBuilder(manifest);
+
+// Helper per aspettare (Sleep)
+const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 function getConfig(configStr) {
     try { return JSON.parse(Buffer.from(configStr, 'base64').toString()); } 
@@ -56,7 +59,7 @@ async function getMovieData(id, tmdbKey) {
     } catch (e) { return null; }
 }
 
-// --- LOGICA CATALOGO ---
+// --- CATALOGO ---
 async function generateCatalog(type, id, config) {
     if (id === "tmdb_trending" && config?.tmdb) {
         try {
@@ -69,10 +72,10 @@ async function generateCatalog(type, id, config) {
     return { metas: [] };
 }
 
-// --- LOGICA STREAM MULTIPLI ---
+// --- STREAM (Con Rate Limit per RD) ---
 async function generateStream(type, id, config) {
     const { rd, tmdb } = config || {};
-    console.log(`⚡ Elaborazione ID: ${id}`);
+    console.log(`⚡ ID: ${id}`);
 
     if (!rd || !tmdb) return { streams: [{ title: "⚠️ Configurazione mancante" }] };
 
@@ -82,10 +85,9 @@ async function generateStream(type, id, config) {
 
         console.log(`   🎬 Cerca: "${movie.title}" (${movie.year})`);
         
-        // 1. Ottieni LISTA di risultati
+        // 1. Cerca Magnet
         let results = await Corsaro.searchMagnet(movie.title, movie.year);
 
-        // Fallback titolo originale se lista vuota
         if (results.length === 0 && movie.title !== movie.originalTitle) {
             console.log(`   ⚠️ Riprovo titolo originale...`);
             results = await Corsaro.searchMagnet(movie.originalTitle, movie.year);
@@ -93,23 +95,44 @@ async function generateStream(type, id, config) {
 
         if (results.length === 0) return { streams: [{ title: "🚫 Nessun risultato trovato" }] };
 
-        console.log(`   🚀 Elaborazione di ${results.length} risultati con Real-Debrid...`);
+        // 2. LIMITA I RISULTATI (Importante per non andare in timeout)
+        // Prendiamo solo i primi 4 risultati migliori per non far aspettare troppo l'utente
+        const topResults = results.slice(0, 4);
+        console.log(`   🚀 Elaborazione sequenziale di ${topResults.length} risultati (per evitare blocchi RD)...`);
 
-        // 2. Processa i risultati con RD (in parallelo per velocità)
-        // NOTA: Questo "sblocca" i link su RD. 
-        const streamPromises = results.map(async (item, index) => {
-            const streamData = await RD.getStreamLink(rd, item.magnet);
-            if (!streamData) return null;
+        let streams = [];
 
-            return {
-                name: `RD | Corsaro`,
-                title: `${item.title}\n📦 ${item.size} | 💾 ${streamData.filename}`,
-                url: streamData.url,
-                behaviorHints: { notWebReady: false }
-            };
-        });
+        // 3. CICLO SEQUENZIALE (Uno alla volta + Pausa)
+        for (const item of topResults) {
+            try {
+                // Chiamata a RD
+                const streamData = await RD.getStreamLink(rd, item.magnet);
+                
+                if (streamData) {
+                    streams.push({
+                        name: `RD | Corsaro`,
+                        title: `${item.title}\n📦 ${item.size} | 💾 ${streamData.filename}`,
+                        url: streamData.url,
+                        behaviorHints: { notWebReady: false }
+                    });
+                    console.log(`      ✅ OK: ${item.title.substring(0, 20)}...`);
+                } else {
+                    // Se RD ritorna null, il file non è cachato o c'è stato un errore
+                    // Opzionale: potremmo aggiungere un link "Download to RD" qui
+                    console.log(`      ⚠️ Cache Miss: ${item.title.substring(0, 20)}...`);
+                }
 
-        const streams = (await Promise.all(streamPromises)).filter(s => s !== null);
+                // PAUSA DI 500ms tra una richiesta e l'altra per non far arrabbiare RD
+                await wait(500); 
+
+            } catch (e) {
+                console.error(`      ❌ Errore su un link: ${e.message}`);
+            }
+        }
+
+        if (streams.length === 0) {
+            return { streams: [{ title: "⚠️ Trovati torrent, ma nessuno in cache RD (Download avviato)" }] };
+        }
 
         return { streams };
 
@@ -131,17 +154,15 @@ app.get('/:userConf/manifest.json', (req, res) => {
 });
 
 app.get('/:userConf/catalog/:type/:id.json', async (req, res) => {
-    const { userConf, type, id } = req.params;
-    const result = await generateCatalog(type, id, getConfig(userConf));
+    const result = await generateCatalog(req.params.type, req.params.id, getConfig(req.params.userConf));
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.json(result);
 });
 
 app.get('/:userConf/stream/:type/:id.json', async (req, res) => {
-    const { userConf, type, id } = req.params;
-    const result = await generateStream(type, id.replace('.json', ''), getConfig(userConf));
+    const result = await generateStream(req.params.type, req.params.id.replace('.json', ''), getConfig(req.params.userConf));
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.json(result);
 });
 
-app.listen(process.env.PORT || 7000, () => console.log("Addon Multi-Result Attivo!"));
+app.listen(process.env.PORT || 7000, () => console.log("Addon Attivo v1.6.0 (Rate Limit Safe)"));
