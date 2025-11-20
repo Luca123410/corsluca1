@@ -1,6 +1,6 @@
 {
   "name": "stremio-tmdb-rd-addon",
-  "version": "1.0.0",
+  "version": "1.0.9",
   "description": "Addon Stremio Corsaro + RD",
   "main": "addon.js",
   "scripts": {
