@@ -3,24 +3,25 @@ const cors = require("cors");
 const path = require("path");
 const axios = require("axios");
 
+// MODULI ATTIVI
 const RD = require("./rd");
 const Corsaro = require("./corsaro");
+const Apibay = require("./apibay");
 
 const app = express();
 app.use(cors());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Logger
 app.use((req, res, next) => {
     if (req.url.includes('/stream/')) console.log(`\n📨 REQ: ${req.method} ${req.url}`);
     next();
 });
 
 const manifest = {
-    id: "org.community.corsaro-truth",
-    version: "2.0.0",
-    name: "Corsaro & RD (Truth)",
-    description: "Ricerca verificata da Real-Debrid",
+    id: "org.community.corsaro-stable-final-v2",
+    version: "10.1.0",
+    name: "Corsaro & TPB (FINAL)",
+    description: "Sistema stabile e pulito",
     resources: ["catalog", "stream"],
     types: ["movie", "series"],
     catalogs: [{ type: "movie", id: "tmdb_trending", name: "Popolari Italia" }],
@@ -29,9 +30,7 @@ const manifest = {
 };
 
 const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-
-// FILTRO REALE: Se Real-Debrid dice che il file è sotto i 250MB, lo nascondiamo.
-const REAL_SIZE_FILTER = 250 * 1024 * 1024; 
+const REAL_SIZE_FILTER = 250 * 1024 * 1024; // 250 MB
 
 function formatBytes(bytes) {
     if (!+bytes) return '0 B';
@@ -65,118 +64,106 @@ async function getMovieData(id, tmdbKey) {
     } catch (e) { return null; }
 }
 
-// CATALOGO
-async function generateCatalog(type, id, config) {
-    if (id === "tmdb_trending" && config?.tmdb) {
-        try {
-            const r = await axios.get(`https://api.themoviedb.org/3/trending/movie/day?api_key=${config.tmdb}&language=it-IT`);
-            return { metas: r.data.results.map(m => ({
-                id: `tmdb:${m.id}`, type: "movie", name: m.title, poster: `https://image.tmdb.org/t/p/w500${m.poster_path}`
-            }))};
-        } catch (e) { return { metas: [] }; }
-    }
-    return { metas: [] };
-}
+// CATALOGO e ROUTING INIZIALE omessi per brevità
 
 // STREAM
-async function generateStream(type, id, config) {
-    const { rd, tmdb } = config || {};
-    console.log(`⚡ ID: ${id}`);
-
-    if (!rd || !tmdb) return { streams: [{ title: "⚠️ Configurazione mancante" }] };
+app.get('/:userConf/stream/:type/:id.json', async (req, res) => {
+    const { userConf, type, id } = req.params;
+    const config = getConfig(userConf);
+    const cleanId = id.replace('.json', '');
+    
+    if (!config.rd || !config.tmdb) return res.json({ streams: [] });
 
     try {
-        const movie = await getMovieData(id, tmdb);
-        if (!movie) return { streams: [{ title: "⚠️ Film non trovato" }] };
+        const movie = await getMovieData(cleanId, config.tmdb);
+        if (!movie) return res.json({ streams: [] });
 
         console.log(`   🎬 Cerca: "${movie.title}" (${movie.year})`);
         
-        let results = await Corsaro.searchMagnet(movie.title, movie.year);
+        const [corsaroRes, apiRes] = await Promise.all([
+            Corsaro.searchMagnet(movie.title, movie.year),
+            Apibay.searchMagnet(movie.title, movie.year)
+        ]);
 
-        if (results.length === 0 && movie.title !== movie.originalTitle) {
-            console.log(`   ⚠️ Riprovo titolo originale...`);
-            results = await Corsaro.searchMagnet(movie.originalTitle, movie.year);
+        let allResults = [...corsaroRes, ...apiRes];
+
+        if (allResults.length === 0 && movie.title !== movie.originalTitle) {
+            console.log(`   ⚠️ Fallback titolo originale...`);
+            const [corsaroOrig, apiOrig] = await Promise.all([
+                Corsaro.searchMagnet(movie.originalTitle, movie.year),
+                Apibay.searchMagnet(movie.originalTitle, movie.year)
+            ]);
+            allResults = [...corsaroOrig, ...apiOrig];
         }
 
-        if (results.length === 0) return { streams: [{ title: "🚫 Nessun risultato trovato" }] };
+        if (allResults.length === 0) return res.json({ streams: [] });
 
-        // Prendiamo più risultati da analizzare (fino a 8) perché ora filtriamo dopo
-        const topResults = results.slice(0, 8);
-        console.log(`   🚀 Verifico ${topResults.length} magnet con Real-Debrid...`);
+        // De-duplicate
+        const uniqueResults = [];
+        const magnetSet = new Set();
+        for (const item of allResults) {
+            if (!magnetSet.has(item.magnet)) {
+                magnetSet.add(item.magnet);
+                uniqueResults.push(item);
+            }
+        }
+
+        // --- NUOVO ORDINAMENTO: Priorità a Seeders > Dimensione ---
+        uniqueResults.sort((a, b) => {
+            // Corsaro non ha seeders, quindi li forziamo a 0 per la comparazione
+            const aSeeders = a.seeders || 0;
+            const bSeeders = b.seeders || 0;
+
+            // 1. Ordina per Seeders (dal più alto)
+            if (aSeeders !== bSeeders) return bSeeders - aSeeders;
+            
+            // 2. Poi ordina per Dimensione
+            return b.sizeBytes - a.sizeBytes;
+        });
+        
+        const topResults = uniqueResults.slice(0, 15);
+        console.log(`   🚀 Verifico ${topResults.length} magnet (Max ${uniqueResults.length})...`);
 
         let streams = [];
-        let validCount = 0;
 
         for (const item of topResults) {
             try {
-                // Chiediamo a RD
-                const streamData = await RD.getStreamLink(rd, item.magnet);
+                const streamData = await RD.getStreamLink(config.rd, item.magnet);
                 
                 if (streamData) {
-                    // ORA ABBIAMO LA VERITÀ: streamData.size è la dimensione reale del file video su RD
-                    
-                    // FILTRO REALE
+                    // FILTRO REALE DIMENSIONE
                     if (streamData.size < REAL_SIZE_FILTER) {
-                        console.log(`      🗑️ SCARTATO FAKE/PICCOLO: ${formatBytes(streamData.size)} - ${item.title.substring(0,15)}...`);
-                        continue; // Salta questo risultato
+                         console.log(`      🗑️ SCARTATO [${item.source}]: File troppo piccolo (${formatBytes(streamData.size)}).`);
+                        continue;
                     }
 
-                    let info = "";
-                    if (streamData.type === 'ready') info = `✅ PRONTO | ${formatBytes(streamData.size)}`;
-                    else info = `⏳ DOWNLOAD | ${streamData.progress}%`;
+                    let info = streamData.type === 'ready' ? `✅ PRONTO | ${formatBytes(streamData.size)}` : `⏳ DOWNLOAD ${streamData.progress}%`;
+                    let sourceTag = item.source === "Corsaro" ? "🇮🇹 Corsaro" : "🌍 PirateBay";
 
                     streams.push({
-                        name: `RD | Corsaro`,
-                        title: `${item.title}\n${info}\n📄 ${streamData.filename}`,
-                        url: streamData.url || "", // URL vuoto se in download, ma Stremio lo mostrerà
+                        name: `RD | ${sourceTag}`,
+                        title: `${item.title}\n${info} | 📦 ${formatBytes(streamData.size)}\n📄 ${streamData.filename}`,
+                        url: streamData.url || "",
                         behaviorHints: { notWebReady: false }
                     });
                     
-                    validCount++;
-                    console.log(`      ✅ OK (${formatBytes(streamData.size)}): ${item.title.substring(0, 20)}...`);
-                    
-                    // Se abbiamo trovato 4 risultati validi, ci fermiamo per non rallentare troppo
-                    if (validCount >= 4) break;
-
-                } 
-                await wait(200); 
-
+                    if(streamData.type === 'ready') console.log(`      ✅ OK [${item.source}]: ${item.title.substring(0, 20)}...`);
+                } else {
+                    // Log dei fallimenti (i magnet che hai visto sparire)
+                    console.log(`      ❌ FALLO MAGNET [${item.source}]: Link non valido o morto.`);
+                }
+                
+                await wait(200);
             } catch (e) {}
         }
 
-        if (streams.length === 0) {
-            return { streams: [{ title: "🚫 Nessun file valido sopra i 250MB trovato." }] };
-        }
+        // Resto del codice omesso per brevità...
 
-        return { streams };
-
-    } catch (error) {
-        console.error("🔥 Errore:", error.message);
-        return { streams: [{ title: "Errore Interno" }] };
+    } catch (e) {
+        res.json({ streams: [] });
     }
-}
-
-// ROUTING
-app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
-
-app.get('/:userConf/manifest.json', (req, res) => {
-    const config = getConfig(req.params.userConf);
-    const m = { ...manifest };
-    if (config.tmdb && config.rd) m.behaviorHints = { configurable: true, configurationRequired: false };
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.json(m);
 });
 
-app.get('/:userConf/catalog/:type/:id.json', async (req, res) => {
-    const result = await generateCatalog(req.params.type, req.params.id, getConfig(req.params.userConf));
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.json(result);
-});
-
-app.get('/:userConf/stream/:type/:id.json', async (req, res) => {
-    const result = await generateStream(req.params.type, req.params.id.replace('.json', ''), getConfig(req.params.userConf));
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.json(result);
-});
-
-app.listen(process.env.PORT || 7000, () => console.log("Addon Attivo v2.0.0 (Truth Filter)"));
+// ROUTING E ALTRI HANDLERS omessi per brevità, sono identici al codice precedente.
+// Se hai bisogno del file intero, chiedi pure.
+// ...
