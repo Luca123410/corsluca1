@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Configura Addon TMDB & Real-Debrid</title>
+    <style>
+        :root {
+            --bg-color: #141414;
+            --card-bg: #1f1f1f;
+            --text-color: #e0e0e0;
+            --accent-color: #6a5acd; /* SlateBlue simile a Stremio */
+            --accent-hover: #5848b7;
+            --input-bg: #2a2a2a;
+            --border-color: #333;
+            --success-color: #28a745;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+            padding: 20px;
+        }
+
+        .container {
+            background-color: var(--card-bg);
+            padding: 2rem;
+            border-radius: 12px;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+            width: 100%;
+            max-width: 500px;
+            text-align: center;
+        }
+
+        h1 {
+            margin-bottom: 0.5rem;
+            color: white;
+        }
+
+        p.subtitle {
+            color: #aaa;
+            margin-bottom: 2rem;
+            font-size: 0.9rem;
+        }
+
+        .form-group {
+            margin-bottom: 1.5rem;
+            text-align: left;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 0.5rem;
+            font-weight: 600;
+            font-size: 0.9rem;
+        }
+
+        .help-text {
+            font-size: 0.75rem;
+            color: #888;
+            margin-top: 0.25rem;
+        }
+
+        .help-text a {
+            color: var(--accent-color);
+            text-decoration: none;
+        }
+
+        .help-text a:hover {
+            text-decoration: underline;
+        }
+
+        input[type="text"] {
+            width: 100%;
+            padding: 12px;
+            background-color: var(--input-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            color: white;
+            font-size: 1rem;
+            box-sizing: border-box;
+            transition: border-color 0.2s;
+        }
+
+        input[type="text"]:focus {
+            outline: none;
+            border-color: var(--accent-color);
+        }
+
+        .actions {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            margin-top: 2rem;
+        }
+
+        button {
+            padding: 14px;
+            border: none;
+            border-radius: 8px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s, transform 0.1s;
+        }
+
+        button:active {
+            transform: scale(0.98);
+        }
+
+        #installBtn {
+            background-color: var(--accent-color);
+            color: white;
+        }
+
+        #installBtn:hover {
+            background-color: var(--accent-hover);
+        }
+
+        #copyBtn {
+            background-color: transparent;
+            border: 1px solid var(--border-color);
+            color: #aaa;
+        }
+
+        #copyBtn:hover {
+            background-color: rgba(255,255,255,0.05);
+            color: white;
+        }
+
+        .hidden {
+            display: none;
+        }
+
+        #message {
+            margin-top: 1rem;
+            font-size: 0.9rem;
+            min-height: 1.2em;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <h1>Setup Addon</h1>
+        <p class="subtitle">Inserisci le tue chiavi API per configurare l'addon.</p>
+
+        <div class="form-group">
+            <label for="tmdb">TMDB API Key (v3)</label>
+            <input type="text" id="tmdb" placeholder="Es. a1b2c3d4..." autocomplete="off">
+            <div class="help-text">
+                Necessaria per locandine e metadati. <br>
+                <a href="https://www.themoviedb.org/settings/api" target="_blank">Ottieni API Key TMDB ↗</a>
+            </div>
+        </div>
+
+        <div class="form-group">
+            <label for="rd">Real-Debrid API Token</label>
+            <input type="text" id="rd" placeholder="Es. F4R5..." autocomplete="off">
+            <div class="help-text">
+                Necessaria per lo sblocco dei link. <br>
+                <a href="https://real-debrid.com/apitoken" target="_blank">Ottieni Token Real-Debrid ↗</a>
+            </div>
+        </div>
+
+        <div class="actions">
+            <button id="installBtn" onclick="install()">🚀 Installa su Stremio</button>
+            <button id="copyBtn" onclick="copyLink()">📋 Copia Link Installazione</button>
+        </div>
+
+        <div id="message"></div>
+    </div>
+
+    <script>
+        function getManifestUrl() {
+            const tmdb = document.getElementById('tmdb').value.trim();
+            const rd = document.getElementById('rd').value.trim();
+
+            if (!tmdb || !rd) {
+                showMessage("⚠️ Inserisci entrambe le chiavi per continuare.", "red");
+                return null;
+            }
+
+            const config = { tmdb, rd };
+            // Codifica la configurazione in Base64
+            const configStr = JSON.stringify(config);
+            const configB64 = btoa(configStr);
+
+            const protocol = window.location.protocol;
+            const host = window.location.host;
+            
+            // Costruzione URL finale
+            // Esempio: http://localhost:7000/BASE64STRING/manifest.json
+            return `${protocol}//${host}/${configB64}/manifest.json`;
+        }
+
+        function install() {
+            const manifestUrl = getManifestUrl();
+            if (!manifestUrl) return;
+
+            // Cambia protocollo da http/https a stremio://
+            const stremioUrl = manifestUrl.replace(/^http/, 'stremio');
+            window.location.href = stremioUrl;
+        }
+
+        function copyLink() {
+            const manifestUrl = getManifestUrl();
+            if (!manifestUrl) return;
+
+            const stremioUrl = manifestUrl.replace(/^http/, 'stremio');
+            
+            navigator.clipboard.writeText(stremioUrl).then(() => {
+                showMessage("✅ Link copiato negli appunti!", "#28a745");
+            }, () => {
+                showMessage("❌ Errore nella copia.", "red");
+            });
+        }
+
+        function showMessage(text, color) {
+            const msg = document.getElementById('message');
+            msg.style.color = color || 'white';
+            msg.innerText = text;
+            setTimeout(() => { msg.innerText = ""; }, 4000);
+        }
+    </script>
+</body>
+</html>
