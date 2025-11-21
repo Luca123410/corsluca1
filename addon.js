@@ -20,12 +20,11 @@ app.use(cors());
 app.use(express.static(path.join(__dirname, 'public')));
 
 // --- MANIFEST BASE ---
-// Nota: il logo viene inserito dinamicamente nella rotta
 const manifestBase = {
     id: "org.community.corsaro-ultimate",
-    version: "22.5.0", 
+    version: "22.6.0", 
     name: "Corsaro + Global (UNLEASHED)",
-    description: "🇮🇹 L'esperienza definitiva per l'Italia. 🚀 5 Motori: Corsaro & UIndex (IT) + 1337x, TorrentMagnet, Apibay (Global). ⚡ Real-Debrid Integrato per streaming 4K istantaneo. 🛡️ Filtri Smart: Esclusione Cam/Screener, No-4K opzionale e Cache System per velocità estrema.",
+    description: "🇮🇹 L'esperienza definitiva per l'Italia. 🚀 5 Motori: Corsaro & UIndex (IT) + Global. ⚡ Real-Debrid Integrato. 🛡️ Filtri Smart e Rilevamento Audio/HDR avanzato.",
     resources: ["catalog", "stream"],
     types: ["movie", "series"],
     catalogs: [{ type: "movie", id: "tmdb_trending", name: "Popolari Italia" }],
@@ -49,21 +48,41 @@ function getConfig(configStr) {
     try { return JSON.parse(Buffer.from(configStr, 'base64').toString()); } catch (e) { return {}; }
 }
 
+// --- ANALISI AVANZATA DEL FILE (NUOVO) ---
 function extractStreamInfo(title) {
     const t = title.toLowerCase();
     let quality = "Unknown";
+    
+    // 1. Risoluzione
     if (t.includes("2160p") || t.includes("4k")) quality = "4k";
     else if (t.includes("1080p")) quality = "1080p";
     else if (t.includes("720p")) quality = "720p";
     else if (t.includes("480p") || t.includes("sd")) quality = "SD";
     else if (t.includes("dvdrip")) quality = "DVD";
 
+    // 2. Canali Audio (Logica rubata a Orion)
+    let channels = "";
+    if (t.includes("7.1")) channels = "7.1";
+    else if (t.includes("5.1") || t.includes("ac3") || t.includes("dd5") || t.includes("dd+")) channels = "5.1";
+    else if (t.includes("aac") || t.includes("2.0") || t.includes("stereo")) channels = "2.0";
+
+    // 3. Video Tech (HDR / x265)
+    let videoExtras = [];
+    if (t.includes("hdr") || t.includes("10bit")) videoExtras.push("HDR");
+    if (t.includes("dv") || t.includes("dolby vision")) videoExtras.push("DV");
+    if (t.includes("hevc") || t.includes("x265") || t.includes("h265")) videoExtras.push("HEVC");
+
+    // 4. Lingue
     let lang = [];
     if (t.includes("ita") || t.includes("italian")) lang.push("ITA 🇮🇹");
     if (t.includes("multi") || t.includes("dual")) lang.push("MULTI 🌐");
-    if (t.includes("eng") && !t.includes("ita")) lang.push("ENG 🇬🇧");
+    if (t.includes("eng") && !t.includes("ita") && !t.includes("multi")) lang.push("ENG 🇬🇧");
     
-    return { quality, lang };
+    // Costruiamo la stringa info extra
+    let extraInfo = videoExtras.join(" | ");
+    if (channels) extraInfo += (extraInfo ? ` | 🔊 ${channels}` : `🔊 ${channels}`);
+
+    return { quality, lang, extraInfo };
 }
 
 async function getMetadata(id, type, tmdbKey) {
@@ -141,7 +160,7 @@ async function generateStream(type, id, config, userConfStr) {
             searchBase = `${metadata.title} ${metadata.year}`;
         }
 
-        // RICERCA
+        // RICERCA PENTA
         let promises = [
             Corsaro.searchMagnet(searchBase, metadata.year).catch(()=>[]),
             UIndex.searchMagnet(searchBase, metadata.year).catch(()=>[])
@@ -175,7 +194,7 @@ async function generateStream(type, id, config, userConfStr) {
 
         if (allResults.length === 0) return { streams: [{ title: `🚫 Nessun risultato trovato` }] };
 
-        // FILTRI & DEDUPLICAZIONE
+        // DEDUPLICAZIONE
         let uniqueResults = [];
         const magnetSet = new Set();
         for (const item of allResults) {
@@ -187,6 +206,7 @@ async function generateStream(type, id, config, userConfStr) {
             }
         }
 
+        // APPLICAZIONE FILTRI
         if (filters.no4k) uniqueResults = uniqueResults.filter(i => !/2160p|4k|uhd/i.test(i.title));
         if (filters.noCam) {
             const bad = ['cam', 'dvdscr', 'hdcam', 'telesync', 'tc', 'ts'];
@@ -201,10 +221,13 @@ async function generateStream(type, id, config, userConfStr) {
         for (const item of topResults) {
             try {
                 const streamData = await RD.getStreamLink(config.rd, item.magnet);
+                
                 if (streamData && streamData.type === 'ready' && streamData.size < REAL_SIZE_FILTER) continue; 
 
                 const fileTitle = streamData?.filename || item.title;
-                const { quality, lang } = extractStreamInfo(fileTitle);
+                
+                // --- NEW: EXTRA INFO (HDR, 5.1, ETC) ---
+                const { quality, lang, extraInfo } = extractStreamInfo(fileTitle);
                 
                 let displayLang = lang.join(" / ");
                 if (!displayLang) {
@@ -223,8 +246,10 @@ async function generateStream(type, id, config, userConfStr) {
                 }
 
                 let titleStr = `📄 ${fileTitle}\n`;
-                titleStr += `💾 ${finalSize}\n`;
-                titleStr += `⚙️ ${item.source}\n`;
+                titleStr += `💾 ${finalSize}`;
+                // Aggiunge Info Extra se presenti (Es: | HEVC | 🔊 5.1)
+                if (extraInfo) titleStr += ` | ${extraInfo}`;
+                titleStr += `\n⚙️ ${item.source}\n`;
                 titleStr += `🔊 ${displayLang}`;
 
                 if (streamData) {
@@ -264,7 +289,6 @@ app.get('/:userConf/manifest.json', (req, res) => {
     const config = getConfig(req.params.userConf);
     const m = { ...manifestBase };
     
-    // LOGO DINAMICO: Usa l'host attuale per servire l'immagine locale
     const protocol = req.headers['x-forwarded-proto'] || req.protocol;
     const host = req.get('host');
     m.logo = `${protocol}://${host}/logo.png`;
@@ -294,4 +318,4 @@ app.get('/:userConf/stream/:type/:id.json', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 7000;
-app.listen(PORT, () => console.log(`Addon Unleashed v22.5.0 avviato su porta ${PORT}!`));
+app.listen(PORT, () => console.log(`Addon Unleashed v22.6.0 avviato su porta ${PORT}!`));
