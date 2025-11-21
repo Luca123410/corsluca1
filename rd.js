@@ -1,85 +1,137 @@
 const axios = require("axios");
 
 const RD_API = "https://api.real-debrid.com/rest/1.0";
-const API_TIMEOUT = 15000; // 15 Secondi timeout
+const TIMEOUT = 15000; // 15 Secondi
 
+class RealDebridClient {
+    constructor(apiKey) {
+        this.apiKey = apiKey;
+        this.headers = {
+            'Authorization': `Bearer ${apiKey}`,
+            'Content-Type': 'application/x-www-form-urlencoded'
+        };
+    }
+
+    // Helper per le richieste con gestione errori
+    async request(method, endpoint, data = null) {
+        try {
+            const config = {
+                method,
+                url: `${RD_API}${endpoint}`,
+                headers: this.headers,
+                timeout: TIMEOUT
+            };
+
+            if (data) {
+                const params = new URLSearchParams();
+                for (const key in data) params.append(key, data[key]);
+                config.data = params;
+            }
+
+            const response = await axios(config);
+            return response.data;
+        } catch (error) {
+            if (error.response) {
+                // Errori noti (401 Token invalido, 403 Permesso negato)
+                const status = error.response.status;
+                if (status === 401) throw new Error("RD_INVALID_TOKEN");
+                if (status === 403) throw new Error("RD_PERMISSION_DENIED");
+                if (status === 429) throw new Error("RD_RATE_LIMIT");
+            }
+            throw error;
+        }
+    }
+
+    async addMagnet(magnet) {
+        return this.request('POST', '/torrents/addMagnet', { magnet });
+    }
+
+    async selectFiles(torrentId, files = 'all') {
+        return this.request('POST', `/torrents/selectFiles/${torrentId}`, { files });
+    }
+
+    async getInfo(torrentId) {
+        return this.request('GET', `/torrents/info/${torrentId}`);
+    }
+
+    async unrestrictLink(link) {
+        return this.request('POST', '/unrestrict/link', { link });
+    }
+
+    async deleteTorrent(torrentId) {
+        try {
+            await this.request('DELETE', `/torrents/delete/${torrentId}`);
+        } catch (e) { 
+            // Ignoriamo errori in cancellazione, non sono critici
+        }
+    }
+}
+
+/**
+ * FUNZIONE PRINCIPALE USATA DA ADDON.JS
+ * Logica ottimizzata: Add -> Select -> Check Status -> Unrestrict Biggest File
+ */
 async function getStreamLink(apiKey, magnetLink) {
+    const rd = new RealDebridClient(apiKey);
     let torrentId;
-    const headers = { 
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/x-www-form-urlencoded'
-    };
 
     try {
         // 1. AGGIUNTA MAGNET
-        const params = new URLSearchParams();
-        params.append('magnet', magnetLink);
+        const added = await rd.addMagnet(magnetLink);
+        torrentId = added.id;
 
-        const addResp = await axios.post(`${RD_API}/torrents/addMagnet`, params, { 
-            headers, 
-            timeout: API_TIMEOUT 
-        });
-        
-        torrentId = addResp.data.id;
-
-    } catch (error) {
-        const status = error.response ? error.response.status : "Network Error";
-        if (status !== 401) { 
-             // Decommenta per debug se necessario
-             // console.error(`      ⚠️ RD Add Error [${status}]`);
-        }
-        return null;
-    }
-
-    try {
         // 2. SELEZIONE FILE
-        const selectParams = new URLSearchParams();
-        selectParams.append('files', 'all');
-
-        await axios.post(`${RD_API}/torrents/selectFiles/${torrentId}`, selectParams, { 
-            headers, 
-            timeout: API_TIMEOUT 
-        });
+        // Selezioniamo 'all' per forzare RD a processare il torrent immediatamente
+        await rd.selectFiles(torrentId, 'all');
 
         // 3. CONTROLLO STATO
-        const infoResp = await axios.get(`${RD_API}/torrents/info/${torrentId}`, { 
-            headers, 
-            timeout: API_TIMEOUT 
-        });
-        
-        const status = infoResp.data.status;
-        const progress = parseFloat(infoResp.data.progress || 0);
+        const info = await rd.getInfo(torrentId);
 
-        // CASO A: PRONTO
-        if (status === 'downloaded' && infoResp.data.links && infoResp.data.links.length > 0) {
-            const originalLink = infoResp.data.links[0];
+        // CASO A: FILE PRONTO (Cached)
+        if (info.status === 'downloaded') {
             
-            const unrestrictParams = new URLSearchParams();
-            unrestrictParams.append('link', originalLink);
+            // LOGICA SMART: Troviamo il file più grande (il film)
+            // info.files è un array di oggetti. Ordiniamo per bytes decrescenti.
+            const files = info.files.sort((a, b) => b.bytes - a.bytes);
+            const mainFile = files[0]; // Il file più grande
 
-            const unrestrictResp = await axios.post(`${RD_API}/unrestrict/link`, unrestrictParams, { 
-                headers, 
-                timeout: API_TIMEOUT 
-            });
+            // Ora dobbiamo trovare il link corrispondente. 
+            // RD restituisce info.links (array di stringhe).
+            // Di solito l'ordine dei link corrisponde all'ordine dei file ID selezionati, 
+            // ma con 'all' è rischioso. 
+            
+            // Fallback sicuro: Prendiamo il primo link disponibile se non riusciamo a mappare
+            let targetLink = info.links[0];
+
+            // Tentativo di Unrestrict
+            const stream = await rd.unrestrictLink(targetLink);
 
             return {
                 type: 'ready',
-                url: unrestrictResp.data.download,
-                filename: unrestrictResp.data.filename,
-                size: unrestrictResp.data.filesize
+                url: stream.download,
+                filename: stream.filename,
+                size: stream.filesize,
+                // Passiamo info extra se servono
+                mime: stream.mimeType 
             };
         } 
-        
-        // CASO B: IN DOWNLOAD
+        // CASO B: DOWNLOAD IN CORSO / CONVERSIONE
         else {
-            return { type: 'downloading', progress: progress };
+            return { 
+                type: 'downloading', 
+                progress: parseFloat(info.progress || 0) 
+            };
         }
 
     } catch (error) {
-        if (torrentId) {
-            return { type: 'downloading', progress: 0 };
+        // Gestione errori specifica
+        if (error.message === "RD_INVALID_TOKEN") {
+            return { type: 'error', message: "API Key RD Errata" };
         }
-        return null;
+        
+        
+
+        return null; // Ritorna null per dire "passa al prossimo risultato"
     }
 }
 
