@@ -236,9 +236,10 @@ async function searchMagnet(title, year) {
     const finalMap = new Map();
 
     const add = (r) => {
-        const hash = r.magnet.match(/btih:([A-F0-9]{40})/i)[1];
-        if (!hash) return;
-
+        const hashMatch = r.magnet.match(/btih:([A-F0-9]{40})/i);
+        if (!hashMatch) return;
+        
+        const hash = hashMatch[1];
         const key = hash.toUpperCase();
         if (finalMap.has(key)) {
             const ex = finalMap.get(key);
@@ -255,9 +256,10 @@ async function searchMagnet(title, year) {
     xResults.forEach(add);
 
     const finalResults = Array.from(finalMap.values())
-        .sort((a, b) => b.seeders - a.seeders || b.sizeBytes - a.sizeBytes);
+        .sort((a, b) => b.seeders - a.seeders || b.sizeBytes - a.sizeBytes)
+        .slice(0, 6); // ⭐ LIMITATO AI PRIMI 5 RISULTATI
 
-    console.log(`TOTALE UNICI con seeders massimi: ${finalResults.length}`);
+    console.log(`TOTALE UNICI con seeders massimi: ${finalResults.length} (limitato a 5)`);
 
     return finalResults;
 }
