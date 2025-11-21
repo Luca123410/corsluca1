@@ -1,7 +1,5 @@
 const axios = require("axios");
 
-// Lista dei provider META-SCRAPER
-// KnightCrawler è il "fratello minore" di Torrentio, utilissimo come backup.
 const PROVIDERS = [
     { 
         name: "Torrentio", 
@@ -11,7 +9,7 @@ const PROVIDERS = [
     { 
         name: "KnightCrawler", 
         url: "https://knightcrawler.elfhosted.com",
-        parseType: "torrentio" // Usa la stessa struttura di Torrentio
+        parseType: "torrentio" 
     },
     { 
         name: "MediaFusion", 
@@ -23,7 +21,6 @@ const PROVIDERS = [
 async function fetchFromProvider(provider, id, type) {
     try {
         const url = `${provider.url}/stream/${type}/${id}.json`;
-        // Timeout leggermente più alto per gestire 3 chiamate esterne
         const { data } = await axios.get(url, { timeout: 7000 }); 
 
         if (!data || !data.streams) return [];
@@ -49,19 +46,31 @@ async function fetchFromProvider(provider, id, type) {
                     const seedMatch = metaLine.match(/👤\s+(\d+)/);
                     if (seedMatch) seeders = parseInt(seedMatch[1]);
                     
-                    // Distinguiamo la fonte visiva
                     const providerPrefix = provider.name === "Torrentio" ? "Tio" : "KC";
                     const sourceMatch = metaLine.match(/⚙️\s+(.*)/);
                     if (sourceMatch) source = `${providerPrefix}|${sourceMatch[1]}`;
                 }
             } 
-            // B. LOGICA MEDIAFUSION
+            // B. LOGICA MEDIAFUSION (FIXED)
             else if (provider.parseType === "mediafusion") {
                 const desc = stream.description || stream.title; 
                 const lines = desc.split('\n');
                 
+                // Titolo base (pulizia emoji cartelle)
                 title = lines[0].replace("📂 ", "").replace("/", "").trim();
                 
+                // 🔍 FIX IMPORTANTE: CERCA L'ITALIANO OVUNQUE
+                // Se troviamo una bandiera o la scritta ITA in qualsiasi parte della descrizione,
+                // la aggiungiamo forzatamente al titolo. Così il filtro ITA STRICT non lo cancella.
+                const fullText = desc.toLowerCase();
+                const hasHiddenIta = fullText.includes("🇮🇹") || 
+                                     fullText.includes("italian") || 
+                                     (fullText.includes("audio") && fullText.includes("ita"));
+
+                if (hasHiddenIta && !title.toLowerCase().includes("ita")) {
+                    title += " [ITA]"; // Timbralo come Italiano!
+                }
+
                 const seedLine = lines.find(l => l.includes("👤"));
                 if (seedLine) {
                     seeders = parseInt(seedLine.split("👤 ")[1]) || 0;
@@ -80,7 +89,6 @@ async function fetchFromProvider(provider, id, type) {
                 }
             }
 
-            // Calcolo SizeBytes generico se mancante
             if (sizeBytes === 0 && size !== "Unknown") {
                 const num = parseFloat(size);
                 if (size.includes("GB")) sizeBytes = num * 1024 * 1024 * 1024;
@@ -112,10 +120,8 @@ function formatBytes(bytes) {
 }
 
 async function searchMagnet(id, type) {
-    // Parallelismo totale: spara a Torrentio, KnightCrawler e MediaFusion insieme
     const promises = PROVIDERS.map(p => fetchFromProvider(p, id, type));
     const resultsArray = await Promise.all(promises);
-    
     return resultsArray.flat();
 }
 
