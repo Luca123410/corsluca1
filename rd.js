@@ -1,38 +1,67 @@
 const axios = require("axios");
 
 const RD_API = "https://api.real-debrid.com/rest/1.0";
-const API_TIMEOUT = 5000; // 5 secondi di timeout massimo per ogni chiamata RD
+const API_TIMEOUT = 15000; // 15 Secondi timeout
 
 async function getStreamLink(apiKey, magnetLink) {
+    let torrentId;
+    const headers = { 
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/x-www-form-urlencoded'
+    };
+
     try {
-        const headers = { Authorization: `Bearer ${apiKey}` };
+        // 1. AGGIUNTA MAGNET
+        const params = new URLSearchParams();
+        params.append('magnet', magnetLink);
 
-        // 1. Aggiungi Magnet
-        const addResp = await axios.post(`${RD_API}/torrents/addMagnet`, 
-            `magnet=${encodeURIComponent(magnetLink)}`, 
-            { headers, timeout: API_TIMEOUT } // Aggiunto timeout
-        );
-        const torrentId = addResp.data.id;
+        const addResp = await axios.post(`${RD_API}/torrents/addMagnet`, params, { 
+            headers, 
+            timeout: API_TIMEOUT 
+        });
+        
+        torrentId = addResp.data.id;
 
-        // 2. Seleziona file
-        await axios.post(`${RD_API}/torrents/selectFiles/${torrentId}`, 
-            "files=all", 
-            { headers, timeout: API_TIMEOUT } // Aggiunto timeout
-        );
+    } catch (error) {
+        const status = error.response ? error.response.status : "Network Error";
+        if (status !== 401) { 
+             // Decommenta per debug se necessario
+             // console.error(`      ⚠️ RD Add Error [${status}]`);
+        }
+        return null;
+    }
 
-        // 3. Controlla stato
-        const infoResp = await axios.get(`${RD_API}/torrents/info/${torrentId}`, 
-            { headers, timeout: API_TIMEOUT } // Aggiunto timeout
-        );
+    try {
+        // 2. SELEZIONE FILE
+        const selectParams = new URLSearchParams();
+        selectParams.append('files', 'all');
+
+        await axios.post(`${RD_API}/torrents/selectFiles/${torrentId}`, selectParams, { 
+            headers, 
+            timeout: API_TIMEOUT 
+        });
+
+        // 3. CONTROLLO STATO
+        const infoResp = await axios.get(`${RD_API}/torrents/info/${torrentId}`, { 
+            headers, 
+            timeout: API_TIMEOUT 
+        });
+        
         const status = infoResp.data.status;
-        const progress = parseFloat(infoResp.data.progress);
+        const progress = parseFloat(infoResp.data.progress || 0);
 
-        if (status === 'downloaded' && infoResp.data.links?.length > 0) {
+        // CASO A: PRONTO
+        if (status === 'downloaded' && infoResp.data.links && infoResp.data.links.length > 0) {
             const originalLink = infoResp.data.links[0];
-            const unrestrictResp = await axios.post(`${RD_API}/unrestrict/link`, 
-                `link=${originalLink}`, 
-                { headers, timeout: API_TIMEOUT } // Aggiunto timeout
-            );
+            
+            const unrestrictParams = new URLSearchParams();
+            unrestrictParams.append('link', originalLink);
+
+            const unrestrictResp = await axios.post(`${RD_API}/unrestrict/link`, unrestrictParams, { 
+                headers, 
+                timeout: API_TIMEOUT 
+            });
+
             return {
                 type: 'ready',
                 url: unrestrictResp.data.download,
@@ -41,17 +70,16 @@ async function getStreamLink(apiKey, magnetLink) {
             };
         } 
         
-        else if (status === 'downloading' || status === 'magnet_conversion' || status === 'waiting_files_selection' || progress < 100) {
+        // CASO B: IN DOWNLOAD
+        else {
             return { type: 'downloading', progress: progress };
         }
 
-        // Se non è scaricato, non si sta scaricando e non è un magnet in attesa, diamo null
-        return null;
-
     } catch (error) {
-        // Se c'è un timeout o un errore RD, viene gestito come 'null'
-        // console.error("RD Single Error:", error.message);
-        return null; 
+        if (torrentId) {
+            return { type: 'downloading', progress: 0 };
+        }
+        return null;
     }
 }
 
