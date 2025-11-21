@@ -1,68 +1,122 @@
 const axios = require("axios");
 
-// Puoi usare Torrentio o KnightCrawler (che è un clone di Torrentio)
-const BASE_URL = "https://torrentio.strem.fun"; 
-// Alternativa: "https://knightcrawler.elfhosted.com";
+// Lista dei provider META-SCRAPER
+// KnightCrawler è il "fratello minore" di Torrentio, utilissimo come backup.
+const PROVIDERS = [
+    { 
+        name: "Torrentio", 
+        url: "https://torrentio.strem.fun",
+        parseType: "torrentio" 
+    },
+    { 
+        name: "KnightCrawler", 
+        url: "https://knightcrawler.elfhosted.com",
+        parseType: "torrentio" // Usa la stessa struttura di Torrentio
+    },
+    { 
+        name: "MediaFusion", 
+        url: "https://mediafusion.elfhosted.com",
+        parseType: "mediafusion" 
+    }
+];
 
-async function searchMagnet(id, type) {
+async function fetchFromProvider(provider, id, type) {
     try {
-        // Torrentio accetta solo ID tipo tt1234567 o kistsu:123
-        // Se l'ID è tmdb:123, Torrentio spesso non risponde bene, ma ci proviamo.
-        
-        const url = `${BASE_URL}/stream/${type}/${id}.json`;
-        // console.log(`   🧛 "Rubando" risultati da: ${url}`); // Debug opzionale
-
-        const { data } = await axios.get(url, { timeout: 5000 }); // Timeout breve per non bloccare tutto
+        const url = `${provider.url}/stream/${type}/${id}.json`;
+        // Timeout leggermente più alto per gestire 3 chiamate esterne
+        const { data } = await axios.get(url, { timeout: 7000 }); 
 
         if (!data || !data.streams) return [];
 
         return data.streams.map(stream => {
-            // Estraiamo i dati dal titolo formattato di Torrentio
-            // Formato tipico: "Titolo\n👤 100 💾 1.5 GB ⚙️ 1337x"
-            const lines = stream.title.split('\n');
-            const metaLine = lines.find(l => l.includes('💾')); // Cerca la riga con l'icona floppy
-            
+            let title = "Unknown";
             let size = "Unknown";
+            let sizeBytes = 0;
             let seeders = 0;
-            let source = "Torrentio";
+            let source = provider.name;
 
-            if (metaLine) {
-                // Estrazione Size
-                const sizeMatch = metaLine.match(/💾\s+(.*?)(?:\s|$)/);
-                if (sizeMatch) size = sizeMatch[1];
+            // --- PARSING LOGIC ---
+            
+            // A. LOGICA TORRENTIO / KNIGHTCRAWLER
+            if (provider.parseType === "torrentio") {
+                const lines = stream.title.split('\n');
+                title = lines[0] || stream.title;
+                
+                const metaLine = lines.find(l => l.includes('💾'));
+                if (metaLine) {
+                    const sizeMatch = metaLine.match(/💾\s+(.*?)(?:\s|$)/);
+                    if (sizeMatch) size = sizeMatch[1];
+                    const seedMatch = metaLine.match(/👤\s+(\d+)/);
+                    if (seedMatch) seeders = parseInt(seedMatch[1]);
+                    
+                    // Distinguiamo la fonte visiva
+                    const providerPrefix = provider.name === "Torrentio" ? "Tio" : "KC";
+                    const sourceMatch = metaLine.match(/⚙️\s+(.*)/);
+                    if (sourceMatch) source = `${providerPrefix}|${sourceMatch[1]}`;
+                }
+            } 
+            // B. LOGICA MEDIAFUSION
+            else if (provider.parseType === "mediafusion") {
+                const desc = stream.description || stream.title; 
+                const lines = desc.split('\n');
+                
+                title = lines[0].replace("📂 ", "").replace("/", "").trim();
+                
+                const seedLine = lines.find(l => l.includes("👤"));
+                if (seedLine) {
+                    seeders = parseInt(seedLine.split("👤 ")[1]) || 0;
+                }
 
-                // Estrazione Seeders
-                const seedMatch = metaLine.match(/👤\s+(\d+)/);
-                if (seedMatch) seeders = parseInt(seedMatch[1]);
+                const sourceLine = lines.find(l => l.includes("🔗"));
+                if (sourceLine) {
+                    source = `MF|${sourceLine.split("🔗 ")[1]}`;
+                } else {
+                    source = "MediaFusion";
+                }
 
-                // Estrazione Source
-                const sourceMatch = metaLine.match(/⚙️\s+(.*)/);
-                if (sourceMatch) source = `Tio|${sourceMatch[1]}`;
+                if (stream.behaviorHints && stream.behaviorHints.videoSize) {
+                    sizeBytes = stream.behaviorHints.videoSize;
+                    size = formatBytes(sizeBytes);
+                }
             }
 
-            // Calcolo Size in Bytes per l'ordinamento
-            let sizeBytes = 0;
-            if (size !== "Unknown") {
+            // Calcolo SizeBytes generico se mancante
+            if (sizeBytes === 0 && size !== "Unknown") {
                 const num = parseFloat(size);
                 if (size.includes("GB")) sizeBytes = num * 1024 * 1024 * 1024;
                 else if (size.includes("MB")) sizeBytes = num * 1024 * 1024;
             }
 
             return {
-                title: lines[0] || stream.title, // Il titolo pulito è solitamente la prima riga
+                title: title,
                 size: size,
                 sizeBytes: sizeBytes,
                 seeders: seeders,
                 magnet: stream.infoHash ? `magnet:?xt=urn:btih:${stream.infoHash}` : stream.url,
                 source: source,
-                infoHash: stream.infoHash // Utile per deduplicazione
+                infoHash: stream.infoHash || null
             };
         });
 
     } catch (e) {
-        // Silenziamo gli errori per non sporcare il log, visto che è un motore extra
         return [];
     }
+}
+
+function formatBytes(bytes) {
+    if (!+bytes) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return `${parseFloat((bytes / Math.pow(k, i)).toFixed(2))} ${sizes[i]}`;
+}
+
+async function searchMagnet(id, type) {
+    // Parallelismo totale: spara a Torrentio, KnightCrawler e MediaFusion insieme
+    const promises = PROVIDERS.map(p => fetchFromProvider(p, id, type));
+    const resultsArray = await Promise.all(promises);
+    
+    return resultsArray.flat();
 }
 
 module.exports = { searchMagnet };
