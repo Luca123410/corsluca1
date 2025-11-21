@@ -5,7 +5,7 @@ const axios = require("axios");
 const NodeCache = require("node-cache");
 
 // --- MODULI ESTERNI ---
-// Assicurati di avere rd.js e external.js aggiornati come discusso prima
+// Assicurati di avere rd.js e external.js aggiornati nella stessa cartella
 const RD = require("./rd");
 const Corsaro = require("./corsaro");
 const Apibay = require("./apibay");
@@ -14,7 +14,8 @@ const UIndex = require("./uindex");
 const External = require("./external"); 
 
 // --- CONFIGURAZIONE CACHE ---
-const streamCache = new NodeCache({ stdTTL: 1800, checkperiod: 300 }); 
+// stdTTL globale a 900 (15 min), ma lo sovrascriveremo dinamicamente
+const streamCache = new NodeCache({ stdTTL: 900, checkperiod: 60 }); 
 const catalogCache = new NodeCache({ stdTTL: 43200, checkperiod: 600 }); 
 
 const app = express();
@@ -24,9 +25,9 @@ app.use(express.static(path.join(__dirname, 'public')));
 // --- MANIFEST ---
 const manifestBase = {
     id: "org.community.corsaro-alias-hunter",
-    version: "23.4.0", 
+    version: "23.4.1", // Bump versione per forzare aggiornamento
     name: "Corsaro + Global (ALIAS HUNTER)",
-    description: "🇮🇹 V23.4: Il motore definitivo. Cerca usando Titoli Alternativi (Alias Hunter) per scovare release Multi-Language nascoste. Filtro ITA Strict attivo sui risultati globali. 7 Motori di ricerca.",
+    description: "🇮🇹 V23.4.1: Motore Alias Hunter con Caching Intelligente. Se non trova file, riprova dopo 2 minuti. Filtro ITA Strict + 7 Motori.",
     resources: ["catalog", "stream"],
     types: ["movie", "series"],
     catalogs: [{ type: "movie", id: "tmdb_trending", name: "Popolari Italia" }],
@@ -106,7 +107,7 @@ function extractStreamInfo(title) {
     let lang = [];
     if (t.includes("ita")) lang.push("ITA 🇮🇹");
     if (t.includes("multi") || t.includes("dual")) lang.push("MULTI 🌐");
-    
+     
     return { quality, lang, extraInfo: extra.join(" | ") };
 }
 
@@ -195,18 +196,16 @@ async function generateStream(type, id, config, userConfStr) {
 
         // --- QUERY GENERATION (ALIAS HUNTER) ---
         let queries = [];
-        // Prendiamo max 3 titoli diversi per non rallentare troppo (ITA, Original, Eng)
         const searchTitles = metadata.aliases.slice(0, 3); 
 
         if (metadata.isSeries) {
             const s = String(metadata.season).padStart(2, '0');
             const e = String(metadata.episode).padStart(2, '0');
-            
+             
             searchTitles.forEach(t => {
                 queries.push(`${t} S${s}E${e}`);
                 queries.push(`${t} Season ${metadata.season}`);
             });
-            // Aggiungiamo "Stagione" solo per il titolo principale (italiano)
             queries.push(`${metadata.title} Stagione ${metadata.season}`);
         } else {
             searchTitles.forEach(t => {
@@ -219,26 +218,29 @@ async function generateStream(type, id, config, userConfStr) {
         // --- PARALLEL SEARCH ---
         let promises = [];
 
-        // 1. Corsaro & UIndex (ITA) -> Cercano TUTTE le query (massima probabilità)
+        // 1. Corsaro & UIndex (ITA)
         queries.forEach(q => {
             promises.push(Corsaro.searchMagnet(q, metadata.year).catch(()=>[]));
             promises.push(UIndex.searchMagnet(q, metadata.year).catch(()=>[]));
         });
 
         if (!filters.onlyIta) {
-            // 2. Globali Nativi (Apibay, TM) -> Solo prima query (ITA/ENG)
+            // 2. Globali Nativi (Apibay, TM)
             promises.push(Apibay.searchMagnet(queries[0], metadata.year).catch(()=>[]));
             promises.push(TorrentMagnet.searchMagnet(queries[0], metadata.year).catch(()=>[]));
-            
-            // 3. Meta-Scrapers (Torrentio, MediaFusion, KnightCrawler) -> Usano ID
-            // Qui sta la potenza: loro gestiscono gli alias internamente!
+             
+            // 3. Meta-Scrapers (Torrentio, etc)
             promises.push(External.searchMagnet(id, type).catch(()=>[]));
         }
 
         const resultsArray = await Promise.all(promises);
         let allResults = resultsArray.flat();
 
-        if (allResults.length === 0) return { streams: [{ title: `🚫 Nessun risultato trovato` }] };
+        // SE NON TROVIAMO NULLA -> Return rapido ma con Cache breve gestita alla fine
+        if (allResults.length === 0) {
+            // Continuiamo l'esecuzione per arrivare al blocco finale di caching
+            // o possiamo saltare direttamente a fine funzione, ma usiamo l'array vuoto
+        }
 
         // DEDUPLICAZIONE
         let uniqueResults = [];
@@ -252,29 +254,20 @@ async function generateStream(type, id, config, userConfStr) {
             }
         }
 
-        // --- 🛡️ FILTRO ITA STRICT + BRAIN ---
+        // --- 🛡️ FILTRO ITA STRICT ---
         uniqueResults = uniqueResults.filter(item => {
-            // 1. Check Episodio (Se serie)
             if (metadata.isSeries) {
-                // Se è un Meta-Scraper (Tio/MF/KC), ci fidiamo del loro mapping ID
                 const isTrustedSource = ["Tio", "Torrentio", "KC", "MF", "MediaFusion"].some(s => item.source.includes(s));
                 if (!isTrustedSource && !isExactEpisodeMatch(item.title, metadata.season, metadata.episode)) {
                     return false;
                 }
             }
-
-            // 2. Check Lingua (ITA ENFORCER)
-            // Fonti Italiane -> OK
             const isItalianSource = ["Corsaro", "UIndex", "IlCorsaroNero"].some(s => item.source.includes(s));
             if (isItalianSource) return true;
-
-            // Fonti Globali -> Deve esserci "ITA" o "MULTI" nel titolo
             const t = item.title.toLowerCase();
             const hasSafeTag = /\b(ita|italian|multi|dual)\b/i.test(t);
-            
             if (hasSafeTag) return true;
-
-            return false; // Scarta Inglese puro
+            return false; 
         });
 
         // Filtri Tecnici
@@ -284,7 +277,6 @@ async function generateStream(type, id, config, userConfStr) {
             uniqueResults = uniqueResults.filter(i => !bad.some(q => i.title.toLowerCase().includes(q)));
         }
 
-        // Ordinamento: Dimensione > Seeders
         uniqueResults.sort((a, b) => (b.sizeBytes || 0) - (a.sizeBytes || 0));
         const topResults = uniqueResults.slice(0, 25); 
 
@@ -301,8 +293,8 @@ async function generateStream(type, id, config, userConfStr) {
                 
                 let displayLang = lang.join(" / ");
                 if (!displayLang) {
-                     if (["Corsaro", "UIndex"].some(s => item.source.includes(s))) displayLang = "ITA 🇮🇹";
-                     else displayLang = "ITA/MULTI 🌐"; // Se è passato, è safe
+                      if (["Corsaro", "UIndex"].some(s => item.source.includes(s))) displayLang = "ITA 🇮🇹";
+                      else displayLang = "ITA/MULTI 🌐"; 
                 }
 
                 let nameTag = `[RD ⚡] ${item.source}`;
@@ -311,8 +303,8 @@ async function generateStream(type, id, config, userConfStr) {
 
                 let finalSize = streamData?.size ? formatBytes(streamData.size) : (item.size || "?? GB");
                 if (!streamData) {
-                     if(finalSize.includes("MB") && parseInt(finalSize) < 100) finalSize = "?? GB";
-                     if(finalSize.toLowerCase().endsWith("b") && !finalSize.toLowerCase().includes("k")) finalSize = "?? GB";
+                      if(finalSize.includes("MB") && parseInt(finalSize) < 100) finalSize = "?? GB";
+                      if(finalSize.toLowerCase().endsWith("b") && !finalSize.toLowerCase().includes("k")) finalSize = "?? GB";
                 }
 
                 let titleStr = `📄 ${fileTitle}\n`;
@@ -340,12 +332,26 @@ async function generateStream(type, id, config, userConfStr) {
             } catch (e) {}
         }
 
-        const finalResponse = streams.length === 0 ? { streams: [{ title: "🚫 Nessun file ITA trovato." }] } : { streams };
-        streamCache.set(cacheKey, finalResponse);
+        const finalResponse = streams.length === 0 
+            ? { streams: [{ title: "🚫 Nessun file ITA trovato." }] } 
+            : { streams };
+
+        // --- INTELLIGENT CACHING STRATEGY ---
+        // 1. Se abbiamo URL validi (file trovati su RD) -> Cache Lunga (15 min / 900s)
+        // 2. Se non abbiamo nulla -> Cache Breve (2 min / 120s) per permettere retry
+        const hasValidLinks = streams.some(s => s.url);
+        const dynamicTTL = hasValidLinks ? 900 : 120;
+
+        console.log(`💾 Caching Result per ${id}: ${dynamicTTL} secondi (Items: ${streams.length})`);
+        streamCache.set(cacheKey, finalResponse, dynamicTTL);
+
         return finalResponse;
     } catch (error) {
         console.error("🔥 Errore fatale:", error.message);
-        return { streams: [{ title: "Errore Interno" }] };
+        // In caso di errore critico, cachiamo l'errore per solo 60 secondi
+        const errorResp = { streams: [{ title: "Errore Interno" }] };
+        streamCache.set(cacheKey, errorResp, 60); 
+        return errorResp;
     }
 }
 
@@ -378,9 +384,16 @@ app.get('/:userConf/stream/:type/:id.json', async (req, res) => {
         req.params.userConf 
     );
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Cache-Control', 'public, max-age=1800');
+    
+    // --- CLIENT SIDE CACHING ---
+    // Diciamo al client (Stremio) di tenere il risultato valido per massimo 2 minuti (120s).
+    // Dopo 2 minuti, il client richiederà di nuovo al server.
+    // Il server risponderà istantaneamente se ha ancora la cache valida (quella da 15 min),
+    // oppure cercherà di nuovo se la cache era quella breve (vuota).
+    res.setHeader('Cache-Control', 'public, max-age=120'); 
+    
     res.json(streams);
 });
 
 const PORT = process.env.PORT || 7000;
-app.listen(PORT, () => console.log(`Addon Alias Hunter v23.4.0 avviato su porta ${PORT}!`));
+app.listen(PORT, () => console.log(`Addon Alias Hunter v23.4.1 (Smart Cache) avviato su porta ${PORT}!`));
