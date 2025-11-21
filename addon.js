@@ -7,6 +7,7 @@ const NodeCache = require("node-cache");
 // --- MODULI ESTERNI ---
 // Assicurati di avere rd.js e external.js aggiornati nella stessa cartella
 const RD = require("./rd");
+const DebridX = require("./debridx"); // 1. NUOVO: Importazione del modulo DebridX (Torbox)
 const Corsaro = require("./corsaro");
 const Apibay = require("./apibay");
 const TorrentMagnet = require("./torrentmagnet");
@@ -25,9 +26,9 @@ app.use(express.static(path.join(__dirname, 'public')));
 // --- MANIFEST ---
 const manifestBase = {
     id: "org.community.corsaro-alias-hunter",
-    version: "23.4.1", // Bump versione per forzare aggiornamento
+    version: "23.4.2", // Bump versione per forzare aggiornamento (Versione 23.4.2 con Torbox)
     name: "Corsaro + Global (ALIAS HUNTER)",
-    description: "🇮🇹 V23.4.1: Motore Alias Hunter con Caching Intelligente. Se non trova file, riprova dopo 2 minuti. Filtro ITA Strict + 7 Motori.",
+    description: "🇮🇹 V23.4.2: Motore Alias Hunter con Caching Intelligente. Supporto Multi-Debrid (RD + Torbox). Filtro ITA Strict + 7 Motori.",
     resources: ["catalog", "stream"],
     types: ["movie", "series"],
     catalogs: [{ type: "movie", id: "tmdb_trending", name: "Popolari Italia" }],
@@ -48,7 +49,16 @@ function formatBytes(bytes) {
 }
 
 function getConfig(configStr) {
-    try { return JSON.parse(Buffer.from(configStr, 'base64').toString()); } catch (e) { return {}; }
+    try { 
+        // 2. AGGIORNATO: Aggiunge la chiave 'torbox' alla configurazione
+        const config = JSON.parse(Buffer.from(configStr, 'base64').toString()); 
+        return {
+            rd: config.rd,
+            torbox: config.torbox, // Nuova chiave Torbox
+            tmdb: config.tmdb,
+            filters: config.filters || {}
+        };
+    } catch (e) { return {}; }
 }
 
 // --- 🧠 SMART MATCHING LOGIC ---
@@ -178,7 +188,8 @@ async function generateCatalog(type, id, config) {
 
 // --- STREAM HANDLER ---
 async function generateStream(type, id, config, userConfStr) {
-    const { rd, tmdb } = config || {};
+    // Aggiornato: usa sia rd che torbox
+    const { rd, torbox, tmdb } = config || {}; 
     const filters = config.filters || {}; 
     const cacheKey = `stream:${userConfStr}:${type}:${id}`;
 
@@ -188,7 +199,7 @@ async function generateStream(type, id, config, userConfStr) {
     }
 
     console.log(`⚡ STREAM LIVE (V23.4 Alias Hunter): ${id}`);
-    if (!rd || !tmdb) return { streams: [{ title: "⚠️ Configurazione mancante" }] };
+    if (!rd && !torbox || !tmdb) return { streams: [{ title: "⚠️ Configurazione (RD/Torbox/TMDB) mancante" }] };
 
     try {
         const metadata = await getMetadata(id, type, tmdb);
@@ -280,56 +291,70 @@ async function generateStream(type, id, config, userConfStr) {
         uniqueResults.sort((a, b) => (b.sizeBytes || 0) - (a.sizeBytes || 0));
         const topResults = uniqueResults.slice(0, 25); 
 
-        // VERIFICA RD
+        // VERIFICA DEBRID (RD + TORBOX)
         let streams = [];
         for (const item of topResults) {
-            try {
-                const streamData = await RD.getStreamLink(config.rd, item.magnet);
-                
-                if (streamData && streamData.type === 'ready' && streamData.size < REAL_SIZE_FILTER) continue; 
+            let streamData = null;
+            let debridService = null;
+            
+            // 3. NUOVO: Prova prima Torbox, poi Real Debrid
+            if (torbox) {
+                try {
+                    streamData = await DebridX.getStreamLink(config.torbox, item.magnet);
+                    if (streamData) debridService = 'Torbox 🌐';
+                } catch (e) { /* Fallthrough a RD */ }
+            }
 
-                const fileTitle = streamData?.filename || item.title;
-                const { quality, lang, extraInfo } = extractStreamInfo(fileTitle);
-                
-                let displayLang = lang.join(" / ");
-                if (!displayLang) {
-                      if (["Corsaro", "UIndex"].some(s => item.source.includes(s))) displayLang = "ITA 🇮🇹";
-                      else displayLang = "ITA/MULTI 🌐"; 
-                }
+            if (!streamData && rd) {
+                try {
+                    streamData = await RD.getStreamLink(config.rd, item.magnet);
+                    if (streamData) debridService = 'RD ⚡';
+                } catch (e) { /* Continua */ }
+            }
+            
+            // Se il file è troppo piccolo, ignoralo
+            if (streamData && streamData.type === 'ready' && streamData.size < REAL_SIZE_FILTER) continue; 
 
-                let nameTag = `[RD ⚡] ${item.source}`;
-                if (!streamData) nameTag = `[RD ⏳] ${item.source}`;
-                nameTag += `\n${quality}`;
+            const fileTitle = streamData?.filename || item.title;
+            const { quality, lang, extraInfo } = extractStreamInfo(fileTitle);
+            
+            let displayLang = lang.join(" / ");
+            if (!displayLang) {
+                  if (["Corsaro", "UIndex"].some(s => item.source.includes(s))) displayLang = "ITA 🇮🇹";
+                  else displayLang = "ITA/MULTI 🌐"; 
+            }
 
-                let finalSize = streamData?.size ? formatBytes(streamData.size) : (item.size || "?? GB");
-                if (!streamData) {
-                      if(finalSize.includes("MB") && parseInt(finalSize) < 100) finalSize = "?? GB";
-                      if(finalSize.toLowerCase().endsWith("b") && !finalSize.toLowerCase().includes("k")) finalSize = "?? GB";
-                }
+            let nameTag = `[${debridService || '⏳'}] ${item.source}`;
+            nameTag += `\n${quality}`;
 
-                let titleStr = `📄 ${fileTitle}\n`;
-                titleStr += `💾 ${finalSize}`;
-                if (extraInfo) titleStr += ` | ${extraInfo}`;
-                titleStr += `\n⚙️ ${item.source}\n`;
-                titleStr += `🔊 ${displayLang}`;
+            let finalSize = streamData?.size ? formatBytes(streamData.size) : (item.size || "?? GB");
+            if (!streamData) {
+                  if(finalSize.includes("MB") && parseInt(finalSize) < 100) finalSize = "?? GB";
+                  if(finalSize.toLowerCase().endsWith("b") && !finalSize.toLowerCase().includes("k")) finalSize = "?? GB";
+            }
 
-                if (streamData) {
-                    streams.push({
-                        name: nameTag,
-                        title: titleStr,
-                        url: streamData.url,
-                        behaviorHints: { notWebReady: false }
-                    });
-                } else if (filters.showFake) {
-                    streams.push({
-                        name: nameTag.replace('⚡', '⚠️'),
-                        title: `${titleStr}\n⚠️ Link Diretto (Download Richiesto)`,
-                        url: item.magnet,
-                        behaviorHints: { notWebReady: true }
-                    });
-                }
-                await wait(50); 
-            } catch (e) {}
+            let titleStr = `📄 ${fileTitle}\n`;
+            titleStr += `💾 ${finalSize}`;
+            if (extraInfo) titleStr += ` | ${extraInfo}`;
+            titleStr += `\n⚙️ ${item.source}\n`;
+            titleStr += `🔊 ${displayLang}`;
+
+            if (streamData) {
+                streams.push({
+                    name: nameTag,
+                    title: titleStr,
+                    url: streamData.url,
+                    behaviorHints: { notWebReady: false }
+                });
+            } else if (filters.showFake) {
+                streams.push({
+                    name: nameTag.replace('⚡', '⚠️').replace('🌐', '⚠️').replace('⏳', '⚠️'),
+                    title: `${titleStr}\n⚠️ Link Diretto (Download Richiesto)`,
+                    url: item.magnet,
+                    behaviorHints: { notWebReady: true }
+                });
+            }
+            await wait(50); 
         }
 
         const finalResponse = streams.length === 0 
@@ -364,7 +389,8 @@ app.get('/:userConf/manifest.json', (req, res) => {
     const protocol = req.headers['x-forwarded-proto'] || req.protocol;
     const host = req.get('host');
     m.logo = `${protocol}://${host}/logo.png`;
-    if (config.tmdb && config.rd) m.behaviorHints = { configurable: true, configurationRequired: false };
+    // Aggiornato per richiedere almeno una chiave debrid + tmdb
+    if ((config.tmdb && config.rd) || (config.tmdb && config.torbox)) m.behaviorHints = { configurable: true, configurationRequired: false };
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.json(m);
 });
@@ -386,14 +412,10 @@ app.get('/:userConf/stream/:type/:id.json', async (req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
     
     // --- CLIENT SIDE CACHING ---
-    // Diciamo al client (Stremio) di tenere il risultato valido per massimo 2 minuti (120s).
-    // Dopo 2 minuti, il client richiederà di nuovo al server.
-    // Il server risponderà istantaneamente se ha ancora la cache valida (quella da 15 min),
-    // oppure cercherà di nuovo se la cache era quella breve (vuota).
     res.setHeader('Cache-Control', 'public, max-age=120'); 
     
     res.json(streams);
 });
 
 const PORT = process.env.PORT || 7000;
-app.listen(PORT, () => console.log(`Addon Alias Hunter v23.4.1 (Smart Cache) avviato su porta ${PORT}!`));
+app.listen(PORT, () => console.log(`Addon Alias Hunter v23.4.2 (Smart Cache + Torbox) avviato su porta ${PORT}!`));
