@@ -1,74 +1,123 @@
 const axios = require("axios");
 const cheerio = require("cheerio");
+const https = require("https");
 
 const CORSARO_URL = "https://ilcorsaronero.link";
+
+const httpsAgent = new https.Agent({ rejectUnauthorized: false, keepAlive: true });
 const headers = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
 };
 
 async function searchMagnet(title, year) {
     try {
         const cleanTitle = title.replace(/[^a-zA-Z0-9 ]/g, " ").trim();
-        const searchUrl = `${CORSARO_URL}/search?q=${encodeURIComponent(cleanTitle + (year ? ` ${year}` : ""))}`;
+        // Cerchiamo solo il titolo per massimizzare i risultati
+        const searchUrl = `${CORSARO_URL}/search?q=${encodeURIComponent(cleanTitle)}`;
+        
+        console.log(`\n--- [CORSARO REGEX SEARCH] ---`);
+        console.log(`🔎 Scrape: ${searchUrl}`);
 
-        const { data } = await axios.get(searchUrl, { headers, timeout: 15000 });
-        const $ = cheerio.load(data);
-
-        const results = [];
-
-        // Prendi le righe della tabella
-        $("tr").each((i, row) => {
-            if (i === 0) return; // salta header
-            const cells = $(row).find("td");
-            if (cells.length < 6) return;
-
-            const titleLink = cells.eq(1).find("a").first();
-            const title = titleLink.text().trim();
-            if (!title) return;
-
-            const detailUrl = CORSARO_URL + titleLink.attr("href");
-
-            const sizeStr = cells.eq(4).text().trim();
-            const sizeBytes = convertSize(sizeStr);
-
-            const seeders = parseInt(cells.eq(5).text()) || 0;
-            const leechers = parseInt(cells.eq(6).text()) || 0;
-
-            results.push({ detailUrl, title, sizeBytes, seeders, leechers });
-        });
-
-        // Prendi magnet dalle pagine dettaglio (max 20)
-        const magnetResults = [];
-        for (const item of results.slice(0, 20)) {
-            try {
-                const { data: detailData } = await axios.get(item.detailUrl, { headers, timeout: 10000 });
-                const magnetMatch = detailData.match(/magnet:\?xt=urn:btih:([a-zA-Z0-9]{40})/);
-                if (magnetMatch) {
-                    const fullMagnet = `magnet:?xt=urn:btih:${magnetMatch[1]}&dn=${encodeURIComponent(item.title)}&tr=udp%3A%2F%2Ftracker.opentrackr.org:1337/announce&tr=udp%3A%2F%2Fopen.tracker.cl:1337/announce`;
-                    magnetResults.push({
-                        title: item.title,
-                        magnet: fullMagnet,
-                        size: (item.sizeBytes / 1073741824).toFixed(2) + " GB",
-                        sizeBytes: item.sizeBytes,
-                        seeders: item.seeders,
-                        source: "Corsaro"
-                    });
-                }
-            } catch (e) {}
+        const { data } = await axios.get(searchUrl, { headers, httpsAgent, timeout: 10000 });
+        
+        if (data.includes("Cloudflare")) {
+            console.error("⛔ Blocco Cloudflare (Corsaro).");
+            return [];
         }
 
-        return magnetResults;
+        const $ = cheerio.load(data);
+        let potentialItems = [];
+
+        // --- METODO SCANSIONE LINK ---
+        // Cerchiamo link che contengono "/torrent/" o "details.php"
+        $('a').each((i, elem) => {
+            if (potentialItems.length >= 12) return; // Max 12 risultati
+
+            const href = $(elem).attr('href');
+            const text = $(elem).text().trim();
+
+            if (!href || !text || text.length < 5) return;
+
+            // Verifica se è un link di dettaglio
+            if (href.includes('/torrent/') || href.includes('details.php')) {
+                // Filtro Anno Base
+                if (year && !text.includes(year)) return;
+
+                let fullUrl = href.startsWith('http') ? href : `${CORSARO_URL}${href.startsWith('/') ? '' : '/'}${href}`;
+                
+                // Evita duplicati
+                if (!potentialItems.some(p => p.url === fullUrl)) {
+                    potentialItems.push({ url: fullUrl, title: text });
+                }
+            }
+        });
+
+        console.log(`   ⚡ Trovati ${potentialItems.length} candidati. Scansione dettagli...`);
+
+        if (potentialItems.length === 0) {
+            // Fallback: Magnet diretto in home (vecchio stile)
+            const directMagnet = $('a[href^="magnet:?"]').first().attr('href');
+            if (directMagnet) {
+                return [{ 
+                    title: title, 
+                    magnet: directMagnet, 
+                    size: "Sconosciuta", 
+                    sizeBytes: 9999999999, // Max priority
+                    source: "Corsaro" 
+                }];
+            }
+            return [];
+        }
+
+        // Scansione Parallela Dettagli
+        const promises = potentialItems.map(async (item) => {
+            try {
+                const detailPage = await axios.get(item.url, { headers, httpsAgent, timeout: 8000 });
+                const detailText = detailPage.data;
+                
+                // --- ESTRAZIONE MAGNET VIA REGEX ---
+                // Più robusto di cheerio per i magnet nascosti nei commenti o script
+                const magnetMatch = detailText.match(/magnet:\?xt=urn:btih:([a-zA-Z0-9]{40})/);
+                
+                if (!magnetMatch) return null;
+
+                const hash = magnetMatch[1];
+                const magnet = `magnet:?xt=urn:btih:${hash}&dn=${encodeURIComponent(item.title)}`;
+
+                // Estrazione Dimensione
+                const sizeMatch = detailText.match(/(\d+(\.\d+)?)\s?(GB|MB|KB)/i);
+                let sizeStr = "??";
+                let sizeBytes = 0;
+
+                if (sizeMatch) {
+                    sizeStr = sizeMatch[0];
+                    const num = parseFloat(sizeMatch[1]);
+                    if (sizeStr.includes("GB")) sizeBytes = num * 1024**3;
+                    else if (sizeStr.includes("MB")) sizeBytes = num * 1024**2;
+                }
+
+                return {
+                    title: item.title,
+                    magnet: magnet,
+                    size: sizeStr,
+                    sizeBytes: sizeBytes,
+                    source: "Corsaro"
+                };
+
+            } catch (e) { return null; }
+        });
+
+        const results = (await Promise.all(promises)).filter(r => r !== null);
+        results.sort((a, b) => b.sizeBytes - a.sizeBytes);
+
+        console.log(`✅ CORSARO: Estratti ${results.length} magnet validi.`);
+        return results;
+
     } catch (error) {
-        console.error("Errore Corsaro:", error.message);
+        console.error("🔥 Errore Corsaro:", error.message);
         return [];
     }
-}
-
-function convertSize(str) {
-    const m = str.match(/([\d.]+)\s*(GB|MB)/i);
-    if (!m) return 0;
-    const n = parseFloat(m[1]);
-    return m[2].toUpperCase() === "GB" ? n * 1073741824 : n * 1048576;
 }
 
 module.exports = { searchMagnet };
