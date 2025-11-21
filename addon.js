@@ -10,11 +10,11 @@ const Corsaro = require("./corsaro");
 const Apibay = require("./apibay");
 const TorrentMagnet = require("./torrentmagnet");
 const UIndex = require("./uindex"); 
-const External = require("./external"); // <--- 🧛 IL NUOVO MODULO (META-SCRAPER)
+const External = require("./external"); 
 
 // --- CONFIGURAZIONE CACHE ---
-const streamCache = new NodeCache({ stdTTL: 1800, checkperiod: 300 }); // 30 min
-const catalogCache = new NodeCache({ stdTTL: 43200, checkperiod: 600 }); // 12 ore
+const streamCache = new NodeCache({ stdTTL: 1800, checkperiod: 300 }); 
+const catalogCache = new NodeCache({ stdTTL: 43200, checkperiod: 600 }); 
 
 const app = express();
 app.use(cors());
@@ -22,10 +22,10 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 // --- MANIFEST ---
 const manifestBase = {
-    id: "org.community.corsaro-hexa-engine",
-    version: "23.1.0", 
-    name: "Corsaro + Global (HEXA-ENGINE)",
-    description: "🇮🇹 V23.1: 6 Motori di ricerca. Include Corsaro & UIndex (IT) + Meta-Scraping da Torrentio + Globali. Logic 'The Brain' per selezione episodi e Real-Debrid automatico.",
+    id: "org.community.corsaro-ita-strict",
+    version: "23.3.0", 
+    name: "Corsaro + Global (ITA STRICT)",
+    description: "🇮🇹 V23.3: Filtro 'Zero Tolleranza'. Le fonti Globali/Torrentio vengono mostrate SOLO se contengono esplicitamente la tag ITA. I file 'Multi' generici vengono scartati per sicurezza.",
     resources: ["catalog", "stream"],
     types: ["movie", "series"],
     catalogs: [{ type: "movie", id: "tmdb_trending", name: "Popolari Italia" }],
@@ -35,7 +35,7 @@ const manifestBase = {
 
 // --- UTILITIES ---
 const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-const REAL_SIZE_FILTER = 200 * 1024 * 1024; // 200MB soglia minima
+const REAL_SIZE_FILTER = 200 * 1024 * 1024; 
 
 function formatBytes(bytes) {
     if (!+bytes) return '0 B';
@@ -49,7 +49,7 @@ function getConfig(configStr) {
     try { return JSON.parse(Buffer.from(configStr, 'base64').toString()); } catch (e) { return {}; }
 }
 
-// --- 🧠 SMART MATCHING LOGIC (V23) ---
+// --- 🧠 SMART MATCHING LOGIC ---
 function isExactEpisodeMatch(torrentTitle, season, episode) {
     if (!torrentTitle) return false;
     const title = torrentTitle.toLowerCase();
@@ -58,7 +58,6 @@ function isExactEpisodeMatch(torrentTitle, season, episode) {
     const sStr = String(s).padStart(2, '0');
     const eStr = String(e).padStart(2, '0');
 
-    // 1. Match Esatto Standard (S01E01, 1x01)
     const exactPatterns = [
         new RegExp(`s${sStr}e${eStr}`, 'i'),
         new RegExp(`${s}x${eStr}`, 'i'),
@@ -66,7 +65,6 @@ function isExactEpisodeMatch(torrentTitle, season, episode) {
     ];
     if (exactPatterns.some(p => p.test(title))) return true;
 
-    // 2. Match Range Episodi (S01E01-10 include E05?)
     const rangePattern = new RegExp(`s${sStr}e(\\d{1,2})\\s*[-–—]\\s*e?(\\d{1,2})`, 'i');
     const rangeMatch = title.match(rangePattern);
     if (rangeMatch) {
@@ -75,7 +73,6 @@ function isExactEpisodeMatch(torrentTitle, season, episode) {
         if (e >= start && e <= end) return true;
     }
 
-    // 3. Match Season Pack (S01 Complete, Stagione 1)
     const packPatterns = [
         new RegExp(`stagione\\s*${s}(?!\\d)`, 'i'),
         new RegExp(`season\\s*${s}(?!\\d)`, 'i'),
@@ -103,8 +100,9 @@ function extractStreamInfo(title) {
     if (t.includes("5.1") || t.includes("ac3")) extra.push("5.1");
 
     let lang = [];
-    if (t.includes("ita")) lang.push("ITA 🇮🇹");
-    if (t.includes("multi")) lang.push("MULTI 🌐");
+    if (t.includes("ita") || t.includes("italian")) lang.push("ITA 🇮🇹");
+    // Nota: Rimuoviamo "Multi" da qui perché ora accettiamo solo se c'è anche ITA
+    if (t.includes("multi") || t.includes("dual")) lang.push("MULTI 🌐");
     
     return { quality, lang, extraInfo: extra.join(" | ") };
 }
@@ -133,7 +131,7 @@ async function getMetadata(id, type, tmdbKey) {
                 originalTitle: details.original_title || details.original_name, 
                 year: (details.release_date || details.first_air_date)?.split('-')[0],
                 isSeries: type === 'series', season: seasonNum, episode: episodeNum,
-                imdb_id: tmdbId.startsWith('tt') ? tmdbId : null // Passiamo ID originale se è tt...
+                imdb_id: tmdbId.startsWith('tt') ? tmdbId : null 
             };
         }
         return null;
@@ -158,7 +156,7 @@ async function generateCatalog(type, id, config) {
     return { metas: [] };
 }
 
-// --- STREAM HANDLER (HEXA-ENGINE) ---
+// --- STREAM HANDLER (ITA STRICT) ---
 async function generateStream(type, id, config, userConfStr) {
     const { rd, tmdb } = config || {};
     const filters = config.filters || {}; 
@@ -169,7 +167,7 @@ async function generateStream(type, id, config, userConfStr) {
         return streamCache.get(cacheKey);
     }
 
-    console.log(`⚡ STREAM LIVE (V23.1 Hexa): ${id}`);
+    console.log(`⚡ STREAM LIVE (V23.3 Strict ITA): ${id}`);
     if (!rd || !tmdb) return { streams: [{ title: "⚠️ Configurazione mancante" }] };
 
     try {
@@ -200,20 +198,16 @@ async function generateStream(type, id, config, userConfStr) {
         // --- HEXA-SEARCH PARALLELA ---
         let promises = [];
 
-        // 1 & 2: Corsaro & UIndex (Priorità ITA) - Tutte le query
+        // 1. Fonti Italiane Sicure
         queries.forEach(q => {
             promises.push(Corsaro.searchMagnet(q, metadata.year).catch(()=>[]));
             promises.push(UIndex.searchMagnet(q, metadata.year).catch(()=>[]));
         });
 
+        // 2. Fonti Globali
         if (!filters.onlyIta) {
-            // 3 & 4: Apibay & TorrentMagnet (Globali) - Solo prima query
             promises.push(Apibay.searchMagnet(queries[0], metadata.year).catch(()=>[]));
             promises.push(TorrentMagnet.searchMagnet(queries[0], metadata.year).catch(()=>[]));
-            
-            // 5: 🧛 META-SCRAPER (TORRENTIO)
-            // Passiamo l'ID grezzo della richiesta (es: tt1234567:1:1 o tt1234567)
-            // Torrentio gestisce da solo la risoluzione degli episodi con l'ID.
             promises.push(External.searchMagnet(id, type).catch(()=>[]));
         }
 
@@ -226,36 +220,49 @@ async function generateStream(type, id, config, userConfStr) {
         let uniqueResults = [];
         const magnetSet = new Set();
         for (const item of allResults) {
-            // Estrazione Hash per deduplicazione
             const hashMatch = item.magnet.match(/btih:([A-F0-9]{40})/i);
             const key = hashMatch ? hashMatch[1].toUpperCase() : item.magnet;
-            
             if (!magnetSet.has(key)) {
                 magnetSet.add(key);
                 uniqueResults.push(item);
             }
         }
 
-        // --- INTELLIGENT FILTERING ---
-        if (metadata.isSeries) {
-            uniqueResults = uniqueResults.filter(item => {
-                // Se la fonte è External (Torrentio), ci fidiamo che sia l'episodio giusto
-                if (item.source.includes("Torrentio") || item.source.includes("Tio")) return true;
-                // Per gli altri scraper, usiamo il nostro cervello (Regex)
-                return isExactEpisodeMatch(item.title, metadata.season, metadata.episode);
-            });
-        }
+        // --- 🛡️ STRICT ITA FILTER ---
+        uniqueResults = uniqueResults.filter(item => {
+            // 1. Check Episodio (Se serie TV)
+            if (metadata.isSeries) {
+                const isTrustedSource = item.source.includes("Tio") || item.source.includes("Torrentio");
+                if (!isTrustedSource && !isExactEpisodeMatch(item.title, metadata.season, metadata.episode)) {
+                    return false;
+                }
+            }
 
+            // 2. Check Fonte Sicura (Italia)
+            const isItalianSource = item.source === "Corsaro" || item.source === "UIndex" || item.source === "IlCorsaroNero";
+            if (isItalianSource) return true; // Passa sempre
+
+            // 3. Check Fonte Globale (Stretta)
+            // Deve contenere esplicitamente "ITA" o "ITALIAN".
+            // "MULTI" DA SOLO VIENE SCARTATO.
+            const t = item.title.toLowerCase();
+            // Regex per evitare falsi positivi come "digITAL"
+            const hasStrictIta = /\b(ita|italian)\b/i.test(t);
+
+            if (hasStrictIta) return true; // Passa solo se c'è scritto ITA
+
+            return false; // Scarta tutto il resto (incluso Multi generico)
+        });
+
+        // Filtri Tecnici
         if (filters.no4k) uniqueResults = uniqueResults.filter(i => !/2160p|4k|uhd/i.test(i.title));
         if (filters.noCam) {
             const bad = ['cam', 'dvdscr', 'hdcam', 'telesync', 'tc', 'ts'];
             uniqueResults = uniqueResults.filter(i => !bad.some(q => i.title.toLowerCase().includes(q)));
         }
 
-        // Ordinamento: Chi ha i byte (External li ha di solito) prima, poi seeders
         uniqueResults.sort((a, b) => (b.sizeBytes || 0) - (a.sizeBytes || 0));
-        
-        const topResults = uniqueResults.slice(0, 25); // Aumentato leggermente per accomodare Torrentio
+        const topResults = uniqueResults.slice(0, 20); 
 
         // VERIFICA RD
         let streams = [];
@@ -271,7 +278,7 @@ async function generateStream(type, id, config, userConfStr) {
                 let displayLang = lang.join(" / ");
                 if (!displayLang) {
                      if (item.source === "Corsaro" || item.source === "UIndex") displayLang = "ITA 🇮🇹";
-                     else displayLang = "MULTI / ENG 🌐";
+                     else displayLang = "ITA (Global) 🌐"; // Se è passato, è perché aveva la tag ITA
                 }
 
                 let nameTag = `[RD ⚡] ${item.source}`;
@@ -309,12 +316,12 @@ async function generateStream(type, id, config, userConfStr) {
             } catch (e) {}
         }
 
-        const finalResponse = streams.length === 0 ? { streams: [{ title: "🚫 Nessun file valido." }] } : { streams };
+        const finalResponse = streams.length === 0 ? { streams: [{ title: "🚫 Nessun file ITA sicuro trovato." }] } : { streams };
         streamCache.set(cacheKey, finalResponse);
         return finalResponse;
     } catch (error) {
         console.error("🔥 Errore fatale:", error.message);
-        return { streams: [{ title: "Errore Interno" }] };
+        return { streams: [{ title: "Errore Interno Addon" }] };
     }
 }
 
@@ -352,4 +359,4 @@ app.get('/:userConf/stream/:type/:id.json', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 7000;
-app.listen(PORT, () => console.log(`Addon Hexa-Engine v23.1.0 avviato su porta ${PORT}!`));
+app.listen(PORT, () => console.log(`Addon ITA Strict v23.3.0 avviato su porta ${PORT}!`));
