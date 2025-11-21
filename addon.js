@@ -4,7 +4,7 @@ const path = require("path");
 const axios = require("axios");
 const NodeCache = require("node-cache");
 
-// --- MODULI ESTERNI (Assicurati che questi file esistano nella stessa cartella) ---
+// --- MODULI ESTERNI ---
 const RD = require("./rd");
 const Corsaro = require("./corsaro");
 const Apibay = require("./apibay");
@@ -12,20 +12,20 @@ const TorrentMagnet = require("./torrentmagnet");
 const UIndex = require("./uindex"); 
 
 // --- CONFIGURAZIONE CACHE ---
-// Stream: 30 min (1800s) | Catalogo: 12 ore (43200s)
-const streamCache = new NodeCache({ stdTTL: 1800, checkperiod: 300 });
-const catalogCache = new NodeCache({ stdTTL: 43200, checkperiod: 600 });
+const streamCache = new NodeCache({ stdTTL: 1800, checkperiod: 300 }); // 30 min
+const catalogCache = new NodeCache({ stdTTL: 43200, checkperiod: 600 }); // 12 ore
 
 const app = express();
 app.use(cors());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// --- MANIFEST ---
-const manifest = {
-    id: "org.community.corsaro-visual-update",
-    version: "22.0.5", 
-    name: "Corsaro + Global (Ultimate)",
-    description: "5 Motori - Stile Torrentio - Cache Attiva",
+// --- MANIFEST BASE ---
+// Nota: il logo viene inserito dinamicamente nella rotta
+const manifestBase = {
+    id: "org.community.corsaro-ultimate",
+    version: "22.5.0", 
+    name: "Corsaro + Global (UNLEASHED)",
+    description: "🇮🇹 L'esperienza definitiva per l'Italia. 🚀 5 Motori: Corsaro & UIndex (IT) + 1337x, TorrentMagnet, Apibay (Global). ⚡ Real-Debrid Integrato per streaming 4K istantaneo. 🛡️ Filtri Smart: Esclusione Cam/Screener, No-4K opzionale e Cache System per velocità estrema.",
     resources: ["catalog", "stream"],
     types: ["movie", "series"],
     catalogs: [{ type: "movie", id: "tmdb_trending", name: "Popolari Italia" }],
@@ -35,9 +35,7 @@ const manifest = {
 
 // --- UTILITIES ---
 const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-
-// Filtro per scartare file fake/troppo piccoli (250MB) se RD risponde
-const REAL_SIZE_FILTER = 250 * 1024 * 1024; 
+const REAL_SIZE_FILTER = 250 * 1024 * 1024; // 250MB
 
 function formatBytes(bytes) {
     if (!+bytes) return '0 B';
@@ -51,7 +49,6 @@ function getConfig(configStr) {
     try { return JSON.parse(Buffer.from(configStr, 'base64').toString()); } catch (e) { return {}; }
 }
 
-// Funzione per estrarre info extra (Risoluzione, Audio) dal titolo
 function extractStreamInfo(title) {
     const t = title.toLowerCase();
     let quality = "Unknown";
@@ -66,7 +63,6 @@ function extractStreamInfo(title) {
     if (t.includes("multi") || t.includes("dual")) lang.push("MULTI 🌐");
     if (t.includes("eng") && !t.includes("ita")) lang.push("ENG 🇬🇧");
     
-    // Se non trova nulla ma è una fonte italiana nota, forziamo ITA
     return { quality, lang };
 }
 
@@ -105,7 +101,6 @@ async function generateCatalog(type, id, config) {
         console.log(`📦 CATALOGO CACHED: ${id}`);
         return catalogCache.get(cacheKey);
     }
-
     if (id === "tmdb_trending" && config.tmdb) {
         try {
             const r = await axios.get(`https://api.themoviedb.org/3/trending/movie/day?api_key=${config.tmdb}&language=it-IT`);
@@ -119,22 +114,21 @@ async function generateCatalog(type, id, config) {
     return { metas: [] };
 }
 
-// --- STREAM HANDLER (CORE) ---
+// --- STREAM HANDLER ---
 async function generateStream(type, id, config, userConfStr) {
     const { rd, tmdb } = config || {};
+    const filters = config.filters || {}; 
     const cacheKey = `stream:${userConfStr}:${type}:${id}`;
 
-    // 1. CONTROLLO CACHE
     if (streamCache.has(cacheKey)) {
         console.log(`🚀 STREAM CACHED: ${id}`);
         return streamCache.get(cacheKey);
     }
 
     console.log(`⚡ STREAM LIVE: ${id}`);
-    if (!rd || !tmdb) return { streams: [{ title: "⚠️ Configurazione mancante (RD/TMDB)" }] };
+    if (!rd || !tmdb) return { streams: [{ title: "⚠️ Configurazione Dashboard incompleta" }] };
 
     try {
-        // 2. OTTENIMENTO METADATA
         const metadata = await getMetadata(id, type, tmdb);
         if (!metadata) return { streams: [{ title: "⚠️ Metadata non trovato" }] };
 
@@ -147,15 +141,19 @@ async function generateStream(type, id, config, userConfStr) {
             searchBase = `${metadata.title} ${metadata.year}`;
         }
 
-        // 3. RICERCA PENTA (5 MOTORI)
-        const [corsaroRes, uindexRes, apiRes, magnetRes] = await Promise.all([
+        // RICERCA
+        let promises = [
             Corsaro.searchMagnet(searchBase, metadata.year).catch(()=>[]),
-            UIndex.searchMagnet(searchBase, metadata.year).catch(()=>[]),
-            Apibay.searchMagnet(searchBase, metadata.year).catch(()=>[]),
-            TorrentMagnet.searchMagnet(searchBase, metadata.year).catch(()=>[])
-        ]);
+            UIndex.searchMagnet(searchBase, metadata.year).catch(()=>[])
+        ];
 
-        let allResults = [...corsaroRes, ...uindexRes, ...apiRes, ...magnetRes];
+        if (!filters.onlyIta) {
+            promises.push(Apibay.searchMagnet(searchBase, metadata.year).catch(()=>[]));
+            promises.push(TorrentMagnet.searchMagnet(searchBase, metadata.year).catch(()=>[]));
+        }
+
+        const resultsArray = await Promise.all(promises);
+        let allResults = resultsArray.flat();
 
         // Fallback Titolo Originale
         if (allResults.length === 0 && metadata.title !== metadata.originalTitle) {
@@ -163,19 +161,22 @@ async function generateStream(type, id, config, userConfStr) {
                 `${metadata.originalTitle} S${String(metadata.season).padStart(2, '0')}E${String(metadata.episode).padStart(2, '0')}` : 
                 `${metadata.originalTitle} ${metadata.year}`;
             
-            const [corsaroOrig, uindexOrig, apiOrig, magnetOrig] = await Promise.all([
+            let promisesOrig = [
                 Corsaro.searchMagnet(searchBaseOrig, metadata.year).catch(()=>[]),
-                UIndex.searchMagnet(searchBaseOrig, metadata.year).catch(()=>[]),
-                Apibay.searchMagnet(searchBaseOrig, metadata.year).catch(()=>[]),
-                TorrentMagnet.searchMagnet(searchBaseOrig, metadata.year).catch(()=>[])
-            ]);
-            allResults = [...corsaroOrig, ...uindexOrig, ...apiOrig, ...magnetOrig];
+                UIndex.searchMagnet(searchBaseOrig, metadata.year).catch(()=>[])
+            ];
+            if (!filters.onlyIta) {
+                promisesOrig.push(Apibay.searchMagnet(searchBaseOrig, metadata.year).catch(()=>[]));
+                promisesOrig.push(TorrentMagnet.searchMagnet(searchBaseOrig, metadata.year).catch(()=>[]));
+            }
+            const resultsOrig = await Promise.all(promisesOrig);
+            allResults = [...allResults, ...resultsOrig.flat()];
         }
 
         if (allResults.length === 0) return { streams: [{ title: `🚫 Nessun risultato trovato` }] };
 
-        // 4. DEDUPLICAZIONE E ORDINAMENTO
-        const uniqueResults = [];
+        // FILTRI & DEDUPLICAZIONE
+        let uniqueResults = [];
         const magnetSet = new Set();
         for (const item of allResults) {
             const hashMatch = item.magnet.match(/btih:([A-F0-9]{40})/i);
@@ -185,44 +186,37 @@ async function generateStream(type, id, config, userConfStr) {
                 uniqueResults.push(item);
             }
         }
-        uniqueResults.sort((a, b) => (b.sizeBytes || 0) - (a.sizeBytes || 0));
-        const topResults = uniqueResults.slice(0, 20); // Analizziamo solo i primi 20
 
-        // 5. VERIFICA SU REAL-DEBRID E FORMATTAZIONE
+        if (filters.no4k) uniqueResults = uniqueResults.filter(i => !/2160p|4k|uhd/i.test(i.title));
+        if (filters.noCam) {
+            const bad = ['cam', 'dvdscr', 'hdcam', 'telesync', 'tc', 'ts'];
+            uniqueResults = uniqueResults.filter(i => !bad.some(q => i.title.toLowerCase().includes(q)));
+        }
+
+        uniqueResults.sort((a, b) => (b.sizeBytes || 0) - (a.sizeBytes || 0));
+        const topResults = uniqueResults.slice(0, 20); 
+
+        // VERIFICA RD
         let streams = [];
         for (const item of topResults) {
             try {
                 const streamData = await RD.getStreamLink(config.rd, item.magnet);
-                
-                // Saltiamo file troppo piccoli se RD ci conferma la dimensione
-                if (streamData && streamData.type === 'ready') {
-                    if (streamData.size && streamData.size < REAL_SIZE_FILTER) continue; 
-                }
+                if (streamData && streamData.type === 'ready' && streamData.size < REAL_SIZE_FILTER) continue; 
 
-                // --- CREAZIONE VISUALE STILE TORRENTIO ---
-                
-                // Estrazione Dati Visivi
                 const fileTitle = streamData?.filename || item.title;
                 const { quality, lang } = extractStreamInfo(fileTitle);
                 
-                // Determina le lingue (Fallback se non trovate nel titolo)
                 let displayLang = lang.join(" / ");
                 if (!displayLang) {
                      if (item.source === "Corsaro" || item.source === "UIndex") displayLang = "ITA 🇮🇹";
                      else displayLang = "MULTI / ENG 🌐";
                 }
 
-                // NOME (Colonna Sinistra)
-                // Es: [RD ⚡] Corsaro
-                //     1080p
                 let nameTag = `[RD ⚡] ${item.source}`;
-                if (!streamData) nameTag = `[RD ⏳] ${item.source}`; // Icona clessidra se non pronto
-                nameTag += `\n${quality}`; // Aggiunge risoluzione sotto
+                if (!streamData) nameTag = `[RD ⏳] ${item.source}`;
+                nameTag += `\n${quality}`;
 
-                // TITOLO (Colonna Destra - Multilinea)
                 let finalSize = streamData?.size ? formatBytes(streamData.size) : (item.size || "?? GB");
-                
-                // Se il link non è pronto/verificato, puliamo la dimensione fake
                 if (!streamData) {
                      if(finalSize.includes("MB") && parseInt(finalSize) < 100) finalSize = "?? GB";
                      if(finalSize.toLowerCase().endsWith("b") && !finalSize.toLowerCase().includes("k")) finalSize = "?? GB";
@@ -234,7 +228,6 @@ async function generateStream(type, id, config, userConfStr) {
                 titleStr += `🔊 ${displayLang}`;
 
                 if (streamData) {
-                    // SUCCESSO RD
                     streams.push({
                         name: nameTag,
                         title: titleStr,
@@ -242,46 +235,40 @@ async function generateStream(type, id, config, userConfStr) {
                         behaviorHints: { notWebReady: false }
                     });
                 } else {
-                    // FALLBACK RD (Download o Timeout)
-                    streams.push({
-                        name: nameTag.replace('⚡', '⚠️'), // Icona Warning
-                        title: `${titleStr}\n⚠️ Link Diretto (Download Richiesto)`,
-                        url: item.magnet,
-                        behaviorHints: { notWebReady: true }
-                    });
+                    if (filters.showFake) {
+                        streams.push({
+                            name: nameTag.replace('⚡', '⚠️'),
+                            title: `${titleStr}\n⚠️ Link Diretto (Timeout/Errore RD)`,
+                            url: item.magnet,
+                            behaviorHints: { notWebReady: true }
+                        });
+                    }
                 }
-                
-                await wait(50); // Piccola pausa anti-ban
-            } catch (e) {
-                // Gestione errore singolo link
-                streams.push({
-                    name: `[RD ❌] ${item.source}`,
-                    title: `${item.title}\n⚠️ Errore verifica RD`,
-                    url: item.magnet,
-                    behaviorHints: { notWebReady: true }
-                });
-            }
+                await wait(50); 
+            } catch (e) {}
         }
 
-        const finalResponse = streams.length === 0 ? { streams: [{ title: "🚫 Nessun file valido." }] } : { streams };
-        
-        // SALVATAGGIO CACHE
+        const finalResponse = streams.length === 0 ? { streams: [{ title: "🚫 Nessun file valido (Prova a cambiare filtri)" }] } : { streams };
         streamCache.set(cacheKey, finalResponse);
-        
         return finalResponse;
-
     } catch (error) {
         console.error("🔥 Errore fatale:", error.message);
-        return { streams: [{ title: "Errore Interno Addon" }] };
+        return { streams: [{ title: "Errore Interno" }] };
     }
 }
 
-// --- ROTTE EXPRESS ---
+// --- ROUTING ---
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 
 app.get('/:userConf/manifest.json', (req, res) => {
     const config = getConfig(req.params.userConf);
-    const m = { ...manifest };
+    const m = { ...manifestBase };
+    
+    // LOGO DINAMICO: Usa l'host attuale per servire l'immagine locale
+    const protocol = req.headers['x-forwarded-proto'] || req.protocol;
+    const host = req.get('host');
+    m.logo = `${protocol}://${host}/logo.png`;
+
     if (config.tmdb && config.rd) m.behaviorHints = { configurable: true, configurationRequired: false };
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.json(m);
@@ -306,6 +293,5 @@ app.get('/:userConf/stream/:type/:id.json', async (req, res) => {
     res.json(streams);
 });
 
-// --- START SERVER ---
 const PORT = process.env.PORT || 7000;
-app.listen(PORT, () => console.log(`Addon Visual Ultimate v22.0.5 avviato su porta ${PORT}!`));
+app.listen(PORT, () => console.log(`Addon Unleashed v22.5.0 avviato su porta ${PORT}!`));
