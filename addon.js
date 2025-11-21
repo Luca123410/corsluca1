@@ -10,6 +10,7 @@ const Corsaro = require("./corsaro");
 const Apibay = require("./apibay");
 const TorrentMagnet = require("./torrentmagnet");
 const UIndex = require("./uindex"); 
+const External = require("./external"); // <--- 🧛 IL NUOVO MODULO (META-SCRAPER)
 
 // --- CONFIGURAZIONE CACHE ---
 const streamCache = new NodeCache({ stdTTL: 1800, checkperiod: 300 }); // 30 min
@@ -21,10 +22,10 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 // --- MANIFEST ---
 const manifestBase = {
-    id: "org.community.corsaro-brain-update",
-    version: "23.0.0", 
-    name: "Corsaro + Global (THE BRAIN)",
-    description: "🇮🇹 Motore V23: Matching Intelligente Episodi, Auto-Selezione File RD, Multi-Strategia di Ricerca. Il più avanzato di sempre.",
+    id: "org.community.corsaro-hexa-engine",
+    version: "23.1.0", 
+    name: "Corsaro + Global (HEXA-ENGINE)",
+    description: "🇮🇹 V23.1: 6 Motori di ricerca. Include Corsaro & UIndex (IT) + Meta-Scraping da Torrentio + Globali. Logic 'The Brain' per selezione episodi e Real-Debrid automatico.",
     resources: ["catalog", "stream"],
     types: ["movie", "series"],
     catalogs: [{ type: "movie", id: "tmdb_trending", name: "Popolari Italia" }],
@@ -48,7 +49,7 @@ function getConfig(configStr) {
     try { return JSON.parse(Buffer.from(configStr, 'base64').toString()); } catch (e) { return {}; }
 }
 
-// --- 🧠 SMART MATCHING LOGIC (Estratta dal tuo script avanzato) ---
+// --- 🧠 SMART MATCHING LOGIC (V23) ---
 function isExactEpisodeMatch(torrentTitle, season, episode) {
     if (!torrentTitle) return false;
     const title = torrentTitle.toLowerCase();
@@ -66,7 +67,6 @@ function isExactEpisodeMatch(torrentTitle, season, episode) {
     if (exactPatterns.some(p => p.test(title))) return true;
 
     // 2. Match Range Episodi (S01E01-10 include E05?)
-    // Es: S01E01-12, 1x01-12
     const rangePattern = new RegExp(`s${sStr}e(\\d{1,2})\\s*[-–—]\\s*e?(\\d{1,2})`, 'i');
     const rangeMatch = title.match(rangePattern);
     if (rangeMatch) {
@@ -76,12 +76,11 @@ function isExactEpisodeMatch(torrentTitle, season, episode) {
     }
 
     // 3. Match Season Pack (S01 Complete, Stagione 1)
-    // Se cerchiamo S01E05 e troviamo "Stagione 1 Completa", è un match!
     const packPatterns = [
-        new RegExp(`stagione\\s*${s}(?!\\d)`, 'i'), // Stagione 1
-        new RegExp(`season\\s*${s}(?!\\d)`, 'i'),   // Season 1
-        new RegExp(`s${sStr}\\s*(?:completa|complete|pack)`, 'i'), // S01 Complete
-        new RegExp(`s${sStr}\\s*$`, 'i') // Finisce con S01
+        new RegExp(`stagione\\s*${s}(?!\\d)`, 'i'),
+        new RegExp(`season\\s*${s}(?!\\d)`, 'i'),
+        new RegExp(`s${sStr}\\s*(?:completa|complete|pack)`, 'i'),
+        new RegExp(`s${sStr}\\s*$`, 'i')
     ];
     if (packPatterns.some(p => p.test(title))) return true;
 
@@ -133,7 +132,8 @@ async function getMetadata(id, type, tmdbKey) {
                 title: details.title || details.name, 
                 originalTitle: details.original_title || details.original_name, 
                 year: (details.release_date || details.first_air_date)?.split('-')[0],
-                isSeries: type === 'series', season: seasonNum, episode: episodeNum
+                isSeries: type === 'series', season: seasonNum, episode: episodeNum,
+                imdb_id: tmdbId.startsWith('tt') ? tmdbId : null // Passiamo ID originale se è tt...
             };
         }
         return null;
@@ -158,7 +158,7 @@ async function generateCatalog(type, id, config) {
     return { metas: [] };
 }
 
-// --- STREAM HANDLER POTENZIATO ---
+// --- STREAM HANDLER (HEXA-ENGINE) ---
 async function generateStream(type, id, config, userConfStr) {
     const { rd, tmdb } = config || {};
     const filters = config.filters || {}; 
@@ -169,93 +169,93 @@ async function generateStream(type, id, config, userConfStr) {
         return streamCache.get(cacheKey);
     }
 
-    console.log(`⚡ STREAM LIVE (V23 Brain): ${id}`);
+    console.log(`⚡ STREAM LIVE (V23.1 Hexa): ${id}`);
     if (!rd || !tmdb) return { streams: [{ title: "⚠️ Configurazione mancante" }] };
 
     try {
         const metadata = await getMetadata(id, type, tmdb);
         if (!metadata) return { streams: [{ title: "⚠️ Metadata non trovato" }] };
 
-        // --- MULTI-STRATEGY SEARCH ---
-        // Costruiamo diverse query per massimizzare i risultati
+        // --- QUERY GENERATION ---
         let queries = [];
         
         if (metadata.isSeries) {
             const s = String(metadata.season).padStart(2, '0');
             const e = String(metadata.episode).padStart(2, '0');
-            // 1. Titolo ITA + SxxExx (Standard)
             queries.push(`${metadata.title} S${s}E${e}`);
-            // 2. Titolo ITA + Stagione Pack (Per i pack completi)
             queries.push(`${metadata.title} Stagione ${metadata.season}`);
             
-            // 3. Se il titolo originale è diverso, prova anche quello
             if (metadata.originalTitle && metadata.originalTitle !== metadata.title) {
                 queries.push(`${metadata.originalTitle} S${s}E${e}`);
                 queries.push(`${metadata.originalTitle} Season ${metadata.season}`);
             }
         } else {
-            // Film
             queries.push(`${metadata.title} ${metadata.year}`);
             if (metadata.originalTitle && metadata.originalTitle !== metadata.title) {
                 queries.push(`${metadata.originalTitle} ${metadata.year}`);
             }
         }
-
-        // Rimuovi duplicati
         queries = [...new Set(queries)];
-        console.log(`   🔍 Strategies: ${JSON.stringify(queries)}`);
 
-        // Eseguiamo le ricerche in parallelo su Corsaro e UIndex (i più importanti per ITA)
-        // Gli altri (Apibay/TorrentMagnet) cercheranno solo la query principale per non rallentare troppo
+        // --- HEXA-SEARCH PARALLELA ---
         let promises = [];
 
-        // Corsaro & UIndex: cercano TUTTE le query
+        // 1 & 2: Corsaro & UIndex (Priorità ITA) - Tutte le query
         queries.forEach(q => {
             promises.push(Corsaro.searchMagnet(q, metadata.year).catch(()=>[]));
             promises.push(UIndex.searchMagnet(q, metadata.year).catch(()=>[]));
         });
 
-        // Globali: cercano solo la PRIMA query (Titolo principale)
         if (!filters.onlyIta) {
+            // 3 & 4: Apibay & TorrentMagnet (Globali) - Solo prima query
             promises.push(Apibay.searchMagnet(queries[0], metadata.year).catch(()=>[]));
             promises.push(TorrentMagnet.searchMagnet(queries[0], metadata.year).catch(()=>[]));
+            
+            // 5: 🧛 META-SCRAPER (TORRENTIO)
+            // Passiamo l'ID grezzo della richiesta (es: tt1234567:1:1 o tt1234567)
+            // Torrentio gestisce da solo la risoluzione degli episodi con l'ID.
+            promises.push(External.searchMagnet(id, type).catch(()=>[]));
         }
 
         const resultsArray = await Promise.all(promises);
         let allResults = resultsArray.flat();
 
-        if (allResults.length === 0) return { streams: [{ title: `🚫 Nessun risultato (V23)` }] };
+        if (allResults.length === 0) return { streams: [{ title: `🚫 Nessun risultato trovato` }] };
 
         // DEDUPLICAZIONE
         let uniqueResults = [];
         const magnetSet = new Set();
         for (const item of allResults) {
+            // Estrazione Hash per deduplicazione
             const hashMatch = item.magnet.match(/btih:([A-F0-9]{40})/i);
             const key = hashMatch ? hashMatch[1].toUpperCase() : item.magnet;
+            
             if (!magnetSet.has(key)) {
                 magnetSet.add(key);
                 uniqueResults.push(item);
             }
         }
 
-        // --- INTELLIGENT FILTERING (The Brain) ---
+        // --- INTELLIGENT FILTERING ---
         if (metadata.isSeries) {
-            const initialCount = uniqueResults.length;
             uniqueResults = uniqueResults.filter(item => {
+                // Se la fonte è External (Torrentio), ci fidiamo che sia l'episodio giusto
+                if (item.source.includes("Torrentio") || item.source.includes("Tio")) return true;
+                // Per gli altri scraper, usiamo il nostro cervello (Regex)
                 return isExactEpisodeMatch(item.title, metadata.season, metadata.episode);
             });
-            console.log(`   🧠 Brain Filter: ${initialCount} -> ${uniqueResults.length} torrents validi per S${metadata.season}E${metadata.episode}`);
         }
 
-        // Filtri Utente Standard
         if (filters.no4k) uniqueResults = uniqueResults.filter(i => !/2160p|4k|uhd/i.test(i.title));
         if (filters.noCam) {
             const bad = ['cam', 'dvdscr', 'hdcam', 'telesync', 'tc', 'ts'];
             uniqueResults = uniqueResults.filter(i => !bad.some(q => i.title.toLowerCase().includes(q)));
         }
 
+        // Ordinamento: Chi ha i byte (External li ha di solito) prima, poi seeders
         uniqueResults.sort((a, b) => (b.sizeBytes || 0) - (a.sizeBytes || 0));
-        const topResults = uniqueResults.slice(0, 20); 
+        
+        const topResults = uniqueResults.slice(0, 25); // Aumentato leggermente per accomodare Torrentio
 
         // VERIFICA RD
         let streams = [];
@@ -309,12 +309,12 @@ async function generateStream(type, id, config, userConfStr) {
             } catch (e) {}
         }
 
-        const finalResponse = streams.length === 0 ? { streams: [{ title: "🚫 Nessun file valido trovato." }] } : { streams };
+        const finalResponse = streams.length === 0 ? { streams: [{ title: "🚫 Nessun file valido." }] } : { streams };
         streamCache.set(cacheKey, finalResponse);
         return finalResponse;
     } catch (error) {
         console.error("🔥 Errore fatale:", error.message);
-        return { streams: [{ title: "Errore Interno Addon" }] };
+        return { streams: [{ title: "Errore Interno" }] };
     }
 }
 
@@ -352,4 +352,4 @@ app.get('/:userConf/stream/:type/:id.json', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 7000;
-app.listen(PORT, () => console.log(`Addon The Brain v23.0.0 avviato su porta ${PORT}!`));
+app.listen(PORT, () => console.log(`Addon Hexa-Engine v23.1.0 avviato su porta ${PORT}!`));
