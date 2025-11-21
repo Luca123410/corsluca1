@@ -3,34 +3,41 @@ const cors = require("cors");
 const path = require("path");
 const axios = require("axios");
 
-// MODULI ATTIVI
+// MODULI ATTIVI (5 Motori)
 const RD = require("./rd");
 const Corsaro = require("./corsaro");
 const Apibay = require("./apibay");
+const TorrentMagnet = require("./torrentmagnet");
+const UIndex = require("./uindex"); 
 
 const app = express();
 app.use(cors());
 app.use(express.static(path.join(__dirname, 'public')));
 
+// Logger
 app.use((req, res, next) => {
-    if (req.url.includes('/stream/')) console.log(`\n📨 REQ: ${req.method} ${req.url}`);
+    if (req.url.includes('/stream/') || req.url.includes('/catalog/')) {
+        console.log(`\n📨 REQ: ${req.method} ${req.url}`);
+    }
     next();
 });
 
 const manifest = {
-    id: "org.community.corsaro-filter",
-    version: "12.0.0",
-    name: "Corsaro & TPB (Final Filter)",
-    description: "Filtro unificato di qualità",
+    id: "org.community.corsaro-final-unleashed",
+    version: "21.0.1", // Bump versione
+    name: "Corsaro + Global (UNLEASHED)",
+    description: "5 Motori - Fix Visualizzazione",
     resources: ["catalog", "stream"],
     types: ["movie", "series"],
     catalogs: [{ type: "movie", id: "tmdb_trending", name: "Popolari Italia" }],
-    idPrefixes: ["tmdb", "tt"], 
+    idPrefixes: ["tmdb", "tt"],
     behaviorHints: { configurable: true, configurationRequired: true }
 };
 
 const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-const REAL_SIZE_FILTER = 250 * 1024 * 1024; // 250 MB
+
+// FILTRO DIMENSIONE REALE (Solo se RD risponde)
+const REAL_SIZE_FILTER = 250 * 1024 * 1024; 
 
 function formatBytes(bytes) {
     if (!+bytes) return '0 B';
@@ -44,164 +51,175 @@ function getConfig(configStr) {
     try { return JSON.parse(Buffer.from(configStr, 'base64').toString()); } catch (e) { return {}; }
 }
 
-async function getMovieData(id, tmdbKey) {
+async function getMetadata(id, type, tmdbKey) {
     try {
-        let url;
-        if (id.startsWith('tt')) {
-            url = `https://api.themoviedb.org/3/find/${id}?api_key=${tmdbKey}&language=it-IT&external_source=imdb_id`;
-            const res = await axios.get(url);
-            if (res.data.movie_results?.length > 0) {
-                const m = res.data.movie_results[0];
-                return { title: m.title, originalTitle: m.original_title, year: m.release_date?.split('-')[0] };
-            }
-        } else if (id.startsWith('tmdb:')) {
-            const cleanId = id.split(':')[1];
-            url = `https://api.themoviedb.org/3/movie/${cleanId}?api_key=${tmdbKey}&language=it-IT`;
-            const res = await axios.get(url);
-            return { title: res.data.title, originalTitle: res.data.original_title, year: res.data.release_date?.split('-')[0] };
+        let tmdbId = id;
+        let seasonNum, episodeNum;
+        if (type === 'series' && id.includes(':')) {
+            const parts = id.split(':');
+            tmdbId = parts[0]; seasonNum = parseInt(parts[1]); episodeNum = parseInt(parts[2]);
+        }
+        let details;
+        if (tmdbId.startsWith('tt')) {
+            const res = await axios.get(`https://api.themoviedb.org/3/find/${tmdbId}?api_key=${tmdbKey}&language=it-IT&external_source=imdb_id`);
+            if (type === 'movie' && res.data.movie_results?.length > 0) details = res.data.movie_results[0];
+            else if (type === 'series' && res.data.tv_results?.length > 0) details = res.data.tv_results[0];
+        } else if (tmdbId.startsWith('tmdb:')) {
+            const cleanId = tmdbId.split(':')[1];
+            const res = await axios.get(`https://api.themoviedb.org/3/${type === 'movie' ? 'movie' : 'tv'}/${cleanId}?api_key=${tmdbKey}&language=it-IT`);
+            details = res.data;
+        }
+        if (details) {
+            return {
+                title: details.title || details.name, originalTitle: details.original_title || details.original_name, year: (details.release_date || details.first_air_date)?.split('-')[0],
+                isSeries: type === 'series', season: seasonNum, episode: episodeNum
+            };
         }
         return null;
     } catch (e) { return null; }
 }
 
-// --- NUOVA FUNZIONE DI FILTRO AVANZATO (Basata sulla logica APIBAY) ---
-function applyAdvancedFilters(items, year) {
-    const resultsMap = new Map();
-    const currentYear = parseInt(year);
-
-    const checkKeywords = (nameUpper) => {
-        return nameUpper.includes("ITA") || nameUpper.includes("ITALIAN") || nameUpper.includes("MULTI") || nameUpper.includes("DUAL") || nameUpper.includes("MD") || nameUpper.includes("SUB ITA") || nameUpper.includes("SUB-ITA") || nameUpper.includes("AC3 ITA") || nameUpper.includes("DTS ITA") || nameUpper.includes("FORCED ITA");
-    };
-
-    for (const item of items) {
-        const nameUpper = item.title.toUpperCase();
-
-        // 1. Filtro Lingua: Applica il filtro rigido APIBAY a TUTTI
-        if (!checkKeywords(nameUpper)) continue;
-
-        // 2. Filtro Anno Flessibile (Saltiamo solo se l'anno è molto diverso)
-        if (year && currentYear) {
-            if (![currentYear - 1, currentYear, currentYear + 1].some(ay => item.title.includes(ay))) {
-                // Se non c'è l'anno esatto o +/- 1 anno, lo scartiamo
-                if (!item.source.includes("Corsaro")) continue; // Solo Corsaro ha un po' di tolleranza
-            }
-        }
-        
-        // 3. Deduplicazione (Priorità Seeders > Dimensione)
-        const hash = item.magnet.match(/btih:([a-zA-Z0-9]{40})/);
-        if (!hash) continue; // Hash malformato
-
-        if (resultsMap.has(hash[1])) {
-            const existing = resultsMap.get(hash[1]);
-            // Prioritizza i seeders se ci sono, altrimenti la dimensione
-            if (item.seeders && existing.seeders && item.seeders <= existing.seeders) continue;
-            if (item.sizeBytes <= existing.sizeBytes && !item.seeders) continue;
-        }
-
-        resultsMap.set(hash[1], item);
+// CATALOGO
+async function generateCatalog(type, id, config) {
+    if (id === "tmdb_trending" && config.tmdb) {
+        try {
+            const r = await axios.get(`https://api.themoviedb.org/3/trending/movie/day?api_key=${config.tmdb}&language=it-IT`);
+            return { metas: r.data.results.map(m => ({
+                id: `tmdb:${m.id}`, type: "movie", name: m.title, poster: `https://image.tmdb.org/t/p/w500${m.poster_path}`
+            }))};
+        } catch (e) { return { metas: [] }; }
     }
-
-    const finalResults = Array.from(resultsMap.values());
-    
-    // Ordina (per seeders e dimensione)
-    finalResults.sort((a, b) => {
-        if ((a.seeders || 0) !== (b.seeders || 0)) return b.seeders - a.seeders;
-        return b.sizeBytes - a.sizeBytes;
-    });
-
-    return finalResults;
+    return { metas: [] };
 }
 
-// CATALOGO e routing omessi per brevità...
-
-// STREAM
-app.get('/:userConf/stream/:type/:id.json', async (req, res) => {
-    const { userConf, type, id } = req.params;
-    const config = getConfig(userConf);
-    const cleanId = id.replace('.json', '');
-    
-    if (!config.rd || !config.tmdb) return res.json({ streams: [] });
+// STREAM HANDLER (CORRETTO PER VISUALIZZAZIONE)
+async function generateStream(type, id, config) {
+    const { rd, tmdb } = config || {};
+    console.log(`⚡ ID: ${id}`);
+    if (!rd || !tmdb) return { streams: [{ title: "⚠️ Configurazione mancante" }] };
 
     try {
-        const movie = await getMovieData(cleanId, config.tmdb);
-        if (!movie) return res.json({ streams: [] });
+        const metadata = await getMetadata(id, type, tmdb);
+        if (!metadata) return { streams: [{ title: "⚠️ Metadata non trovato" }] };
 
-        console.log(`   🎬 Cerca: "${movie.title}" (${movie.year})`);
-        
-        const [corsaroRes, apiRes] = await Promise.all([
-            Corsaro.searchMagnet(movie.title, movie.year),
-            Apibay.searchMagnet(movie.title, movie.year)
+        let searchBase;
+        if (metadata.isSeries) {
+            const s = String(metadata.season).padStart(2, '0');
+            const e = String(metadata.episode).padStart(2, '0');
+            searchBase = `${metadata.title} S${s}E${e}`;
+        } else {
+            searchBase = `${metadata.title} ${metadata.year}`;
+        }
+
+        // RICERCA PENTA (5 MOTORI)
+        const [corsaroRes, uindexRes, apiRes, magnetRes] = await Promise.all([
+            Corsaro.searchMagnet(searchBase, metadata.year).catch(()=>[]),
+            UIndex.searchMagnet(searchBase, metadata.year).catch(()=>[]),
+            Apibay.searchMagnet(searchBase, metadata.year).catch(()=>[]),
+            TorrentMagnet.searchMagnet(searchBase, metadata.year).catch(()=>[])
         ]);
 
-        let allResults = [...corsaroRes, ...apiRes];
+        let allResults = [...corsaroRes, ...uindexRes, ...apiRes, ...magnetRes];
 
-        if (allResults.length === 0 && movie.title !== movie.originalTitle) {
-            const [corsaroOrig, apiOrig] = await Promise.all([
-                Corsaro.searchMagnet(movie.originalTitle, movie.year),
-                Apibay.searchMagnet(movie.originalTitle, movie.year)
+        // Fallback Titolo Originale
+        if (allResults.length === 0 && metadata.title !== metadata.originalTitle) {
+            const searchBaseOrig = metadata.isSeries ? `${metadata.originalTitle} S${String(metadata.season).padStart(2, '0')}E${String(metadata.episode).padStart(2, '0')}` : `${metadata.originalTitle} ${metadata.year}`;
+            const [corsaroOrig, uindexOrig, apiOrig, magnetOrig] = await Promise.all([
+                Corsaro.searchMagnet(searchBaseOrig, metadata.year).catch(()=>[]),
+                UIndex.searchMagnet(searchBaseOrig, metadata.year).catch(()=>[]),
+                Apibay.searchMagnet(searchBaseOrig, metadata.year).catch(()=>[]),
+                TorrentMagnet.searchMagnet(searchBaseOrig, metadata.year).catch(()=>[])
             ]);
-            allResults = [...corsaroOrig, ...apiOrig];
+            allResults = [...corsaroOrig, ...uindexOrig, ...apiOrig, ...magnetOrig];
         }
-        
-        // --- APPLICA IL FILTRO AVANZATO AI RISULTATI GREZZI ---
-        const uniqueResults = applyAdvancedFilters(allResults, movie.year);
 
-        if (uniqueResults.length === 0) {
-             console.log("   🚫 Tutti i magnet ITA sono stati filtrati (troppo vecchi/mancano keyword).");
-             return res.json({ streams: [{ title: "🚫 Nessun file valido ITA/MULTI." }] });
+        if (allResults.length === 0) return { streams: [{ title: `🚫 Nessun risultato trovato` }] };
+
+        // Deduplicazione
+        const uniqueResults = [];
+        const magnetSet = new Set();
+        for (const item of allResults) {
+            const hashMatch = item.magnet.match(/btih:([A-F0-9]{40})/i);
+            const key = hashMatch ? hashMatch[1].toUpperCase() : item.magnet;
+            if (!magnetSet.has(key)) {
+                magnetSet.add(key);
+                uniqueResults.push(item);
+            }
         }
+
+        // Ordinamento per dimensione presunta (così i migliori sono in cima)
+        uniqueResults.sort((a, b) => (b.sizeBytes || 0) - (a.sizeBytes || 0));
         
-        uniqueResults.sort((a, b) => {
-            const aSeeders = a.seeders || 0;
-            const bSeeders = b.seeders || 0;
-
-            if (aSeeders !== bSeeders) return bSeeders - aSeeders;
-            return b.sizeBytes - a.sizeBytes;
-        });
-
-        const topResults = uniqueResults.slice(0, 15);
-        console.log(`   🚀 Verifico ${topResults.length} magnet (Finali).`);
+        const topResults = uniqueResults.slice(0, 20);
+        console.log(`   🚀 Verifico ${topResults.length} magnet...`);
 
         let streams = [];
-
         for (const item of topResults) {
             try {
                 const streamData = await RD.getStreamLink(config.rd, item.magnet);
                 
-                if (streamData) {
-                    if (streamData.size < REAL_SIZE_FILTER) {
-                        console.log(`      🗑️ SCARTATO [${item.source}]: File troppo piccolo.`);
-                        continue;
+                // 1. FILTRO RIGIDO: Se RD ci dà la dimensione, usiamo SOLO quella
+                if (streamData && streamData.type === 'ready') {
+                    if (streamData.size && streamData.size < REAL_SIZE_FILTER) {
+                        console.log(`      🗑️ SCARTATO [${item.source}]: ${formatBytes(streamData.size)} (Sotto soglia)`);
+                        continue; 
                     }
+                }
 
-                    let info = streamData.type === 'ready' ? `✅ PRONTO | ${formatBytes(streamData.size)}` : `⏳ DOWNLOAD ${streamData.progress}%`;
-                    let sourceTag = item.source === "Corsaro" ? "RD | Corsaro 🇮🇹" : "RD | PirateBay 🏴‍☠️";
+                let sourceTag = `RD | ${item.source}`;
+                if (item.source === "Corsaro" || item.source === "UIndex") sourceTag += " 🇮🇹";
+                else sourceTag += " 🌍";
+
+                if (streamData) {
+                    // SUCCESSO RD: Usiamo i dati veri
+                    let info = streamData.type === 'ready' ? `✅ PRONTO` : `⏳ DOWNLOAD ${streamData.progress}%`;
+                    let finalSize = streamData.size ? formatBytes(streamData.size) : (item.size || "??");
 
                     streams.push({
                         name: sourceTag,
-                        title: `${item.title}\n${info}\n📄 ${streamData.filename}`,
+                        title: `${item.title}\n${info} | 📦 ${finalSize}\n📄 ${streamData.filename || "File"}`,
                         url: streamData.url || "",
                         behaviorHints: { notWebReady: false }
                     });
-                    
-                    if(streamData.type === 'ready') console.log(`      ✅ OK [${item.source}]: ${item.title.substring(0, 20)}...`);
                 } else {
-                    console.log(`      ❌ FALLO MAGNET [${item.source}]: Link morto/corrotto. (Passo al successivo)`);
+                    // FALLIMENTO RD (TIMEOUT): Gestione intelligente "Falso 4MB"
+                    // Se RD non risponde, non fidiamoci della dimensione del torrent se sembra strana
+                    let fakeSize = item.size || "??";
+                    // Se dice 4 MB o Byte, nascondiamolo per non spaventare l'utente
+                    if(fakeSize.includes("MB") && parseInt(fakeSize) < 100) fakeSize = "?? GB";
+                    if(fakeSize.toLowerCase().endsWith("b") && !fakeSize.toLowerCase().includes("k")) fakeSize = "?? GB";
+
+                    streams.push({
+                        name: `⚠️ ${item.source}`,
+                        // Messaggio cambiato: invece di "Link non verificato" diciamo "Check Saltato"
+                        // E mostriamo "Dimensione Ignota" invece di "4 MB"
+                        title: `${item.title}\n⚡ Link Diretto (RD Timeout)\n📦 Dimensione: Ignota (Click per provare)`, 
+                        url: item.magnet,
+                        behaviorHints: { notWebReady: true }
+                    });
                 }
-                
-                await wait(200);
-            } catch (e) {}
+                await wait(150);
+            } catch (e) {
+                 // CATCH ERRORI: Stessa logica del fallback
+                 streams.push({
+                    name: `⚠️ ${item.source}`,
+                    title: `${item.title}\n⚡ Link Diretto (Errore API)\n📦 Dimensione: Ignota (Click per provare)`, 
+                    url: item.magnet,
+                    behaviorHints: { notWebReady: true }
+                });
+            }
         }
 
-        res.setHeader('Access-Control-Allow-Origin', '*');
-        res.json({ streams });
+        if (streams.length === 0) return { streams: [{ title: "🚫 Nessun file valido." }] };
+        return { streams };
 
-    } catch (e) {
-        res.json({ streams: [] });
+    } catch (error) {
+        console.error("🔥 Errore fatale:", error.message);
+        return { streams: [{ title: "Errore Interno" }] };
     }
-});
+}
 
-// ROUTING INIZIALE E LISTEN (omessi per brevità)
+// ROUTING
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 app.get('/:userConf/manifest.json', (req, res) => {
     const config = getConfig(req.params.userConf);
@@ -210,4 +228,16 @@ app.get('/:userConf/manifest.json', (req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.json(m);
 });
-app.listen(process.env.PORT || 7000, () => console.log("Addon STABILISSIMO (Final) Ready!"));
+app.get('/:userConf/catalog/:type/:id.json', async (req, res) => {
+    const result = await generateCatalog(req.params.type, req.params.id, getConfig(req.params.userConf));
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.json(result);
+});
+app.get('/:userConf/stream/:type/:id.json', async (req, res) => {
+    const streams = await generateStream(req.params.type, req.params.id.replace('.json', ''), getConfig(req.params.userConf));
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.json(streams);
+});
+
+const PORT = process.env.PORT || 7000;
+app.listen(PORT, () => console.log(`Addon UNLEASHED v21.0.1 pronto!`));
