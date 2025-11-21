@@ -5,7 +5,6 @@ const axios = require("axios");
 const NodeCache = require("node-cache");
 
 // --- MODULI ESTERNI ---
-// Assicurati di avere rd.js e external.js aggiornati nella stessa cartella
 const RD = require("./rd");
 const DebridX = require("./debridx"); // 1. NUOVO: Importazione del modulo DebridX (Torbox)
 const Corsaro = require("./corsaro");
