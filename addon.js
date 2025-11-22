@@ -18,7 +18,7 @@ const axiosInstance = axios.create({
     timeout: 15000, 
     httpAgent: new http.Agent({ keepAlive: true }),
     httpsAgent: new https.Agent({ keepAlive: true }),
-    headers: { 'User-Agent': 'Corsaro-Alias-Hunter/23.4.15' }
+    headers: { 'User-Agent': 'Corsaro-Alias-Hunter/23.4.16' }
 });
 
 // --- CONFIGURAZIONE CACHE ---
@@ -32,9 +32,9 @@ app.use(express.static(path.join(__dirname, 'public')));
 // --- MANIFEST ---
 const manifestBase = {
     id: "org.community.corsaro-alias-hunter",
-    version: "23.4.15", 
-    name: "Corsaro + Global (Frankenstein Edition)",
-    description: "🇮🇹 V23.4.15: Motore Unificato. Include Corsaro, 1337x, TPB, Knaben, UIndex. Regex ITA Potenziata.",
+    version: "23.4.16", 
+    name: "Corsaro + Global (Visual Fix)",
+    description: "🇮🇹 V23.4.16: Motore Unificato + Fix Etichette ITA/MULTI visibili.",
     resources: ["catalog", "stream"],
     types: ["movie", "series"],
     catalogs: [{ type: "movie", id: "tmdb_trending", name: "Popolari Italia" }],
@@ -168,7 +168,7 @@ function isExactEpisodeMatch(torrentTitle, season, episode) {
     return false;
 }
 
-// --- PARSING ---
+// --- PARSING STREAM INFO ---
 function extractStreamInfo(title) {
     const t = title.toLowerCase();
     let quality = "Unknown";
@@ -184,13 +184,9 @@ function extractStreamInfo(title) {
     if (t.includes("dolby vision") || t.includes("dv")) extra.push("DV");
     if (t.includes("hevc") || t.includes("x265") || t.includes("h265")) extra.push("HEVC");
     
-    // Regex ITA Potenziata per il display
-    const itaRegex = /\b(ita|italian|italiano|multi|dual|md|sub[\s._-]?ita|forced|ac3[\s._-]?ita|dts[\s._-]?ita)\b/i;
-    
-    let lang = [];
-    if (itaRegex.test(t)) lang.push("ITA 🇮🇹");
+    // Le info sulla lingua le gestiamo direttamente nel loop finale per l'etichetta
      
-    return { quality, lang, extraInfo: extra.join(" | ") };
+    return { quality, extraInfo: extra.join(" | ") };
 }
 
 // --- METADATA ---
@@ -247,7 +243,7 @@ async function generateStream(type, id, config, userConfStr) {
         return streamCache.get(cacheKey);
     }
 
-    console.log(`⚡ STREAM LIVE (V23.4.15): ${id}`);
+    console.log(`⚡ STREAM LIVE (V23.4.16): ${id}`);
     if (!rd && !torbox || !tmdb) return { streams: [{ title: "⚠️ Configurazione Mancante" }] };
 
     try {
@@ -255,9 +251,7 @@ async function generateStream(type, id, config, userConfStr) {
         if (!metadata) return { streams: [{ title: "⚠️ Metadata non trovato" }] };
 
         let queries = [];
-        // Per TorrentMagnet, che è smart, basta 1 query principale + anno
         queries.push(`${metadata.title} ${metadata.year}`); 
-        // Aggiungiamo il titolo originale per sicurezza
         if (metadata.aliases[1]) queries.push(`${metadata.aliases[1]} ${metadata.year}`);
 
         const safeSearch = (promise) => {
@@ -269,12 +263,8 @@ async function generateStream(type, id, config, userConfStr) {
         };
 
         let promises = [];
-        
-        // 1. 🔥 TorrentMagnet (Motore Principale)
-        // Passiamo solo la prima query (Titolo + Anno). Il file gestisce le varianti.
         promises.push(safeSearch(TorrentMagnet.searchMagnet(queries[0], metadata.year)));
 
-        // 2. 🌍 Fonti Globali Extra
         if (!filters.onlyIta) {
             promises.push(safeSearch(BitSearch.searchMagnet(queries[0])));
             promises.push(safeSearch(SolidTorrents.searchMagnet(queries[0])));
@@ -286,7 +276,6 @@ async function generateStream(type, id, config, userConfStr) {
         const resultsArray = await Promise.all(promises);
         let allResults = resultsArray.flat();
 
-        // 3. 🚨 EMERGENZA (Fallback)
         if (allResults.length === 0 && !filters.onlyIta) {
             console.log(`🚨 EMERGENZA: External attivato per ${id}...`);
             try {
@@ -311,32 +300,22 @@ async function generateStream(type, id, config, userConfStr) {
             } else {
                 const existing = uniqueMap.get(key);
                 const existingIsPriority = prioritySources.some(s => existing.source.includes(s));
-                
-                // Logica di sovrascrittura: Se il nuovo è priorità e il vecchio no -> Sostituisci
                 if (isPriority && !existingIsPriority) uniqueMap.set(key, item);
-                // Se entrambi sono priorità, tieni quello con più seeders
                 else if (isPriority && existingIsPriority && (item.seeders > existing.seeders)) uniqueMap.set(key, item);
             }
         }
         let uniqueResults = Array.from(uniqueMap.values());
 
-        // --- FILTRAGGIO (Con Regex Aggiornata!) ---
+        // --- FILTRAGGIO ---
         uniqueResults = uniqueResults.filter(item => {
             if (metadata.isSeries) {
                 const isTrusted = ["Tio", "Torrentio", "BitSearch", "SolidTorrents", "YTS"].some(s => item.source.includes(s));
-                // Le fonti di TorrentMagnet sono già filtrate internamente
                 if (!isTrusted && !isExactEpisodeMatch(item.title, metadata.season, metadata.episode)) return false;
             }
-            
             if (filters.onlyIta) {
                  const t = item.title.toLowerCase();
-                 // Se la fonte è Corsaro, è ITA sicuro.
                  if (item.source.includes("Corsaro")) return true;
-
-                 // Regex Potente per intercettare tutto (MD, DL, Cinefile...)
-                 // Questa è fondamentale per non perdere i risultati di TorrentMagnet
                  const advancedItaRegex = /\b(ita|italian|italiano|multi|dual|md|sub[\s._-]?ita|forced|ac3[\s._-]?ita|dts[\s._-]?ita|cinefile|novarip|mem|robbyrs|idn_crew|pso|badass)\b/i;
-                 
                  return advancedItaRegex.test(t);
             }
             return true;
@@ -360,7 +339,7 @@ async function generateStream(type, id, config, userConfStr) {
 
         const topResults = uniqueResults.slice(0, 150); 
 
-        // --- GENERAZIONE STREAMS ---
+        // --- GENERAZIONE STREAMS (FIX NOMI) ---
         let streams = [];
         for (const item of topResults) {
             let streamData = null;
@@ -383,12 +362,26 @@ async function generateStream(type, id, config, userConfStr) {
             const fileTitle = streamData?.filename || item.title;
             const { quality, extraInfo } = extractStreamInfo(fileTitle);
             const finalSize = streamData?.size ? formatBytes(streamData.size) : (item.size || "??");
-
-            const isIta = /\b(ita|italian)\b/i.test(fileTitle) || item.source.includes("Corsaro");
-            const emoji = isIta ? "🇮🇹" : "🌐";
             
-            // TRUCCO PER STREMIO: Aggiungi la dimensione nel nome per evitare raggruppamenti indesiderati
-            const nameLine = `${emoji} [${debridService || "P2P"}] ${item.source}\n[${finalSize}] ${quality}`;
+            // --- LOGICA ETICHETTE VISIVE ---
+            let langLabel = "ENG/INTL 🌐"; // Default
+            const lowerTitle = fileTitle.toLowerCase();
+            const lowerSource = item.source.toLowerCase();
+
+            if (lowerSource.includes("corsaro")) {
+                langLabel = "ITA 🇮🇹";
+            } else if (/\b(multi|dual|md)\b/i.test(lowerTitle)) {
+                langLabel = "MULTI 🌐";
+            } else if (/\b(sub[\s._-]?ita)\b/i.test(lowerTitle)) {
+                langLabel = "SUB ITA 🇮🇹";
+            } else if (/\b(ita|italian)\b/i.test(lowerTitle)) {
+                langLabel = "ITA 🇮🇹";
+            }
+
+            // --- FORMATTAZIONE NOME STREMIO ---
+            // Formato: [ITA 🇮🇹] CorsaroNero
+            // Riga sotto: 4k [29 GB]
+            const nameLine = `[${langLabel}] ${item.source}\n${quality} [${finalSize}]`;
 
             let titleStr = `📄 ${fileTitle}\n💾 ${finalSize}`;
             if (extraInfo) titleStr += ` | ${extraInfo}`;
@@ -400,7 +393,7 @@ async function generateStream(type, id, config, userConfStr) {
                     title: titleStr,
                     url: streamData.url
                 });
-            } else if (filters.showFake) { // Assicurati che "Mostra Link Download" sia ATTIVO nella config
+            } else if (filters.showFake) {
                 streams.push({
                     name: nameLine,
                     description: "❄️ Uncached. Clicca per scaricare.",
@@ -460,4 +453,4 @@ app.get('/:userConf/stream/:type/:id.json', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 7000;
-app.listen(PORT, () => console.log(`Addon v23.4.15 (Frankenstein) attivo su porta ${PORT}!`));
+app.listen(PORT, () => console.log(`Addon v23.4.16 (Visual Fix) attivo su porta ${PORT}!`));
