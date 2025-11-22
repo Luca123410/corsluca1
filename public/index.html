@@ -223,19 +223,19 @@
         <div class="input-group">
             <label>Real-Debrid Token</label>
             <input type="text" id="rd" class="input-field" placeholder="Es. F4K3TOKEN...">
-            <div class="input-helper">Token principale per lo streaming ad alta velocità. <a href="https://real-debrid.com/apitoken" target="_blank">Ottieni Token</a></div>
+            <div class="input-helper">Token principale per lo streaming. <a href="https://real-debrid.com/apitoken" target="_blank">Ottieni Token</a></div>
         </div>
         
         <div class="input-group">
             <label>Torbox Token (Opzionale)</label>
             <input type="text" id="torbox" class="input-field" placeholder="Es. T0K3NT0RB0X...">
-            <div class="input-helper">Token per Torbox come servizio di Debrid alternativo.</div>
+            <div class="input-helper">Alternativa a Real-Debrid.</div>
         </div>
 
         <div class="input-group">
             <label>AllDebrid API Key (Opzionale)</label>
             <input type="text" id="alldebrid" class="input-field" placeholder="Es. A1B2C3D4...">
-            <div class="input-helper">API Key per AllDebrid come servizio di Debrid alternativo. <a href="https://alldebrid.com/apikeys" target="_blank">Ottieni Key</a></div>
+            <div class="input-helper">Alternativa a Real-Debrid. <a href="https://alldebrid.com/apikeys" target="_blank">Ottieni Key</a></div>
         </div>
 
 
@@ -243,7 +243,7 @@
         
         <div class="options-grid">
             <div class="option-card">
-                <span class="option-label">Priorità Torbox (Su RD)</span>
+                <span class="option-label">Priorità Torbox</span>
                 <label class="switch">
                     <input type="checkbox" id="priorityTorbox">
                     <span class="slider"></span>
@@ -251,7 +251,7 @@
             </div>
             
             <div class="option-card">
-                <span class="option-label">Priorità AllDebrid (Su RD)</span>
+                <span class="option-label">Priorità AllDebrid</span>
                 <label class="switch">
                     <input type="checkbox" id="priorityAllDebrid">
                     <span class="slider"></span>
@@ -259,7 +259,7 @@
             </div>
 
             <div class="option-card">
-                <span class="option-label">Solo Fonti ITA (Corsaro)</span>
+                <span class="option-label">Solo Fonti ITA</span>
                 <label class="switch">
                     <input type="checkbox" id="onlyIta">
                     <span class="slider"></span>
@@ -267,7 +267,7 @@
             </div>
 
             <div class="option-card">
-                <span class="option-label">Rimuovi 4K (Risparmio Dati)</span>
+                <span class="option-label">Rimuovi 4K</span>
                 <label class="switch">
                     <input type="checkbox" id="no4k">
                     <span class="slider"></span>
@@ -283,7 +283,7 @@
             </div>
 
              <div class="option-card">
-                <span class="option-label">Mostra File Fake/Non Verificati</span>
+                <span class="option-label">Mostra File Fake/Link</span>
                 <label class="switch">
                     <input type="checkbox" id="showFake">
                     <span class="slider"></span>
@@ -304,62 +304,55 @@
     <div id="toast">Messaggio</div>
 
     <script>
+        // UX: Impedisci selezione multipla delle priorità
+        document.getElementById('priorityTorbox').addEventListener('change', function() {
+            if(this.checked) document.getElementById('priorityAllDebrid').checked = false;
+        });
+        document.getElementById('priorityAllDebrid').addEventListener('change', function() {
+            if(this.checked) document.getElementById('priorityTorbox').checked = false;
+        });
+
         function getConfig() {
             const tmdb = document.getElementById('tmdb').value.trim();
             const rd = document.getElementById('rd').value.trim();
-            const torbox = document.getElementById('torbox').value.trim(); // Nuovo
-            const alldebrid = document.getElementById('alldebrid').value.trim(); // Nuovo
+            const torbox = document.getElementById('torbox').value.trim();
+            const alldebrid = document.getElementById('alldebrid').value.trim();
             
-            // Nuovi Flag di filtro
             const onlyIta = document.getElementById('onlyIta').checked;
             const no4k = document.getElementById('no4k').checked;
             const noCam = document.getElementById('noCam').checked;
             const showFake = document.getElementById('showFake').checked;
             
-            // Nuovi Flag di impostazione priorità
             const priorityTorbox = document.getElementById('priorityTorbox').checked; 
             const priorityAllDebrid = document.getElementById('priorityAllDebrid').checked; 
 
-            // VALIDAZIONE AGGIORNATA: TMDB è obbligatorio, e almeno uno tra RD, Torbox, AllDebrid
             if (!tmdb || (!rd && !torbox && !alldebrid)) {
-                showToast("⚠️ Inserisci API Key TMDB e almeno un Token Debrid (RD, Torbox o AllDebrid)!", "error");
+                showToast("⚠️ Inserisci API Key TMDB e almeno un Token Debrid!", "error");
                 return null;
             }
 
-            // Gestione dei conflitti di priorità (per semplicità, se più di uno è spuntato, nessuno ha priorità)
-            if (priorityTorbox && priorityAllDebrid) {
-                showToast("⚠️ Non puoi impostare Torbox E AllDebrid come prioritari contemporaneamente. RD sarà usato come default.", "error");
-            }
-            
-            // Costruzione oggetto JSON
             return {
                 tmdb,
                 rd,
-                torbox, // Includi il token Torbox
-                alldebrid, // Includi il token AllDebrid
-                filters: {
-                    onlyIta,
-                    no4k,
-                    noCam,
-                    showFake
-                },
+                torbox,
+                alldebrid,
+                filters: { onlyIta, no4k, noCam, showFake },
                 settings: {
-                    // Solo uno può essere true per avere priorità su RD. Se entrambi sono true, la priorità è ignorata.
-                    priorityTorbox: priorityTorbox && !priorityAllDebrid, 
-                    priorityAllDebrid: priorityAllDebrid && !priorityTorbox 
+                    priorityTorbox, 
+                    priorityAllDebrid 
                 }
             };
         }
 
         function getStremioUrl() {
             const config = getConfig();
-            if (!config) return null; // getConfig mostra l'errore
+            if (!config) return null;
 
             const configStr = btoa(JSON.stringify(config));
             const host = window.location.host;
-            const protocol = window.location.protocol === 'https:' ? 'https' : 'http'; 
             
-            return `stremio://${protocol}://${host}/${configStr}/manifest.json`;
+            // FIX: Rimosso il doppio protocollo. Stremio vuole stremio://dominio/path
+            return `stremio://${host}/${configStr}/manifest.json`;
         }
 
         function installAddon() {
@@ -373,21 +366,31 @@
 
             const configStr = btoa(JSON.stringify(config));
             const host = window.location.host;
-            const protocol = window.location.protocol === 'https:' ? 'https' : 'http'; 
+            const protocol = window.location.protocol; // Qui serve il protocollo HTTP/HTTPS per la copia
 
-            // Costruisci l'URL finale per la copia (usando protocollo web, non stremio://)
-            const url = `${protocol}://${host}/${configStr}/manifest.json`;
+            const url = `${protocol}//${host}/${configStr}/manifest.json`;
             
-            // Hack per copiare su mobile/https non sicuro
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(url).then(() => {
+                    showToast("✅ Link copiato!", "success");
+                }).catch(() => {
+                    fallbackCopy(url);
+                });
+            } else {
+                fallbackCopy(url);
+            }
+        }
+
+        function fallbackCopy(text) {
             const textArea = document.createElement("textarea");
-            textArea.value = url;
+            textArea.value = text;
             document.body.appendChild(textArea);
             textArea.select();
             try {
                 document.execCommand('copy');
-                showToast("✅ Link copiato negli appunti!", "success");
+                showToast("✅ Link copiato!", "success");
             } catch (err) {
-                showToast("❌ Impossibile copiare", "error");
+                showToast("❌ Errore copia", "error");
             }
             document.body.removeChild(textArea);
         }
@@ -396,7 +399,7 @@
             const t = document.getElementById("toast");
             t.innerText = msg;
             t.className = "show " + type;
-            setTimeout(() => { t.className = t.className.replace("show", ""); }, 5000); // 5 secondi per il messaggio di errore
+            setTimeout(() => { t.className = t.className.replace("show", ""); }, 4000);
         }
     </script>
 </body>
