@@ -8,27 +8,32 @@ const https = require('https');
 
 // --- MODULI ESTERNI ---
 const RD = require("./rd");
-const DebridX = require("./debridx"); 
-const TorrentMagnet = require("./torrentmagnet"); 
-const External = require("./external"); 
+const DebridX = require("./debridx"); // Torbox
+const TorrentMagnet = require("./torrentmagnet"); // Il tuo motore Core (Frankenstein)
+const External = require("./external"); // Il "Black Box" per tutto il resto (YTS, BitSearch, ecc.)
 
+// --- CONFIGURAZIONE NETWORK ---
 const axiosInstance = axios.create({
     timeout: 15000, 
     httpAgent: new http.Agent({ keepAlive: true }),
     httpsAgent: new https.Agent({ keepAlive: true }),
-    headers: { 'User-Agent': 'Corsaro-Unleashed/24.2.0' }
+    headers: { 'User-Agent': 'Corsaro-Alias-Hunter/23.5.0' }
 });
 
+// --- CONFIGURAZIONE CACHE ---
 const streamCache = new NodeCache({ stdTTL: 900, checkperiod: 60 }); 
+const catalogCache = new NodeCache({ stdTTL: 43200, checkperiod: 600 }); 
+
 const app = express();
 app.use(cors());
 app.use(express.static(path.join(__dirname, 'public')));
 
+// --- MANIFEST ---
 const manifestBase = {
-    id: "org.community.corsaro-unleashed",
-    version: "24.2.0", 
-    name: "Corsaro Unleashed (Knaben Fix)",
-    description: "🇮🇹 V24.2: Fix Knaben e Ricerca Titoli Corti.",
+    id: "org.community.corsaro-stealth",
+    version: "23.5.0", 
+    name: "Corsaro + Global (Stealth Edition)",
+    description: "🇮🇹 V23.5.0: Architettura Stealth. Core privato + Fallback Esterno Protetto.",
     resources: ["catalog", "stream"],
     types: ["movie", "series"],
     catalogs: [{ type: "movie", id: "tmdb_trending", name: "Popolari Italia" }],
@@ -59,11 +64,14 @@ function getConfig(configStr) {
     } catch (e) { return {}; }
 }
 
+// --- SMART MATCHING ---
 function isExactEpisodeMatch(torrentTitle, season, episode) {
     if (!torrentTitle) return false;
     const title = torrentTitle.toLowerCase();
-    const s = season; const e = episode;
-    const sStr = String(s).padStart(2, '0'); const eStr = String(e).padStart(2, '0');
+    const s = season;
+    const e = episode;
+    const sStr = String(s).padStart(2, '0');
+    const eStr = String(e).padStart(2, '0');
 
     const exactPatterns = [
         new RegExp(`s${sStr}[^0-9]*e${eStr}`, 'i'),
@@ -89,6 +97,7 @@ function isExactEpisodeMatch(torrentTitle, season, episode) {
         new RegExp(`s${sStr}\\s*(?:completa|complete|pack|full|tutta)`, 'i'),
         new RegExp(`s${sStr}\\s*$`, 'i')
     ];
+    
     if (packPatterns.some(p => p.test(title))) {
         if (title.match(/e\d{2}/i) && !exactPatterns[0].test(title)) return false; 
         return true;
@@ -96,9 +105,11 @@ function isExactEpisodeMatch(torrentTitle, season, episode) {
     return false;
 }
 
+// --- PARSING STREAM INFO ---
 function extractStreamInfo(title) {
     const t = title.toLowerCase();
     let quality = "Unknown";
+    
     if (t.includes("2160p") || t.includes("4k") || t.includes("uhd")) quality = "4k";
     else if (t.includes("1080p") || t.includes("fhd")) quality = "1080p";
     else if (t.includes("720p") || t.includes("hd")) quality = "720p";
@@ -109,9 +120,11 @@ function extractStreamInfo(title) {
     if (t.includes("hdr")) extra.push("HDR");
     if (t.includes("dolby vision") || t.includes("dv")) extra.push("DV");
     if (t.includes("hevc") || t.includes("x265") || t.includes("h265")) extra.push("HEVC");
+    
     return { quality, extraInfo: extra.join(" | ") };
 }
 
+// --- METADATA ---
 async function getMetadata(id, type, tmdbKey) {
     try {
         let tmdbId = id;
@@ -134,8 +147,17 @@ async function getMetadata(id, type, tmdbKey) {
         const details = res.data;
 
         if (details) {
+            const rawAliases = details.alternative_titles ? (details.alternative_titles.titles || details.alternative_titles.results || []) : [];
+            const usefulAliases = rawAliases
+                .filter(a => ['US', 'GB', 'ES', 'FR'].includes(a.iso_3166_1))
+                .map(a => a.title);
+
+            let aliases = [details.title || details.name, details.original_title || details.original_name, ...usefulAliases];
+            aliases = [...new Set(aliases.filter(Boolean))];
+
             return {
                 title: details.title || details.name,
+                aliases: aliases,
                 year: (details.release_date || details.first_air_date)?.split('-')[0],
                 isSeries: type === 'series', season: seasonNum, episode: episodeNum,
                 imdb_id: details.external_ids?.imdb_id
@@ -145,28 +167,31 @@ async function getMetadata(id, type, tmdbKey) {
     } catch (e) { return null; }
 }
 
-// --- STREAM GENERATOR ---
+// --- STREAM HANDLER ---
 async function generateStream(type, id, config, userConfStr) {
     const { rd, torbox, tmdb } = config || {}; 
     const filters = config.filters || {}; 
     const cacheKey = `stream:${userConfStr}:${type}:${id}`;
 
-    if (streamCache.has(cacheKey)) return streamCache.get(cacheKey);
+    if (streamCache.has(cacheKey)) {
+        console.log(`🚀 STREAM CACHED: ${id}`);
+        return streamCache.get(cacheKey);
+    }
 
-    console.log(`⚡ STREAM REQUEST: ${id}`);
+    console.log(`⚡ STREAM LIVE (V23.5.0 STEALTH): ${id}`);
     if (!rd && !torbox || !tmdb) return { streams: [{ title: "⚠️ Configurazione Mancante" }] };
 
     try {
         const metadata = await getMetadata(id, type, tmdb);
         if (!metadata) return { streams: [{ title: "⚠️ Metadata non trovato" }] };
 
-        // --- QUERY STRATEGY ---
-        const queryClean = metadata.title; // Per Corsaro (titolo esatto)
-        const queryFull = `${metadata.title} ${metadata.year}`; // Per Knaben/1337x/Global (evita porno/fake)
+        let queries = [];
+        queries.push(`${metadata.title} ${metadata.year}`); 
+        if (metadata.aliases[1]) queries.push(`${metadata.aliases[1]} ${metadata.year}`);
 
         const safeSearch = (promise) => {
             return new Promise(resolve => {
-                const timeout = setTimeout(() => resolve([]), 12000); // 12s Timeout (Knaben è lento)
+                const timeout = setTimeout(() => resolve([]), 9000); // 9 sec timeout totale
                 promise.then(res => { clearTimeout(timeout); resolve(res); })
                         .catch(() => { clearTimeout(timeout); resolve([]); });
             });
@@ -174,13 +199,17 @@ async function generateStream(type, id, config, userConfStr) {
 
         let promises = [];
         
-        // 1. INDEXER PRIVATI (Passiamo ENTRAMBE le query)
-        // TorrentMagnet smisterà la query giusta al sito giusto
-        promises.push(safeSearch(TorrentMagnet.searchMagnet(queryClean, queryFull, metadata.year)));
+        // 1. 🔥 TorrentMagnet (CORE: Corsaro, Knaben, UIndex, TPB, 1337x)
+        // Questo è il tuo motore principale, sicuro e gestito da te.
+        promises.push(safeSearch(TorrentMagnet.searchMagnet(queries[0], metadata.year)));
 
-        // 2. INDEXER GLOBALI (External)
-        console.log(`🌍 Avvio Global Search per ${id}`);
-        promises.push(safeSearch(External.searchMagnet(queryFull, type, metadata.imdb_id)));
+        // 2. 🌍 External (GLOBAL FALLBACK: YTS, BitSearch, Solid, etc.)
+        // Se non è attivo il filtro "Only ITA", chiamiamo il modulo esterno.
+        // È responsabilità di external.js gestire le chiamate "sporche".
+        if (!filters.onlyIta) {
+             // Passiamo più dati a External nel caso gli servano (es. imdb_id per YTS)
+             promises.push(safeSearch(External.searchMagnet(id, type, metadata.imdb_id, queries[0]))); 
+        }
 
         const resultsArray = await Promise.all(promises);
         let allResults = resultsArray.flat();
@@ -201,8 +230,10 @@ async function generateStream(type, id, config, userConfStr) {
             } else {
                 const existing = uniqueMap.get(key);
                 const existingIsPriority = prioritySources.some(s => existing.source.includes(s));
+                
+                // Priorità al Core rispetto all'External
                 if (isPriority && !existingIsPriority) uniqueMap.set(key, item);
-                else if (isPriority === existingIsPriority && (item.seeders > existing.seeders)) uniqueMap.set(key, item);
+                else if (isPriority && existingIsPriority && (item.seeders > existing.seeders)) uniqueMap.set(key, item);
             }
         }
         let uniqueResults = Array.from(uniqueMap.values());
@@ -210,7 +241,8 @@ async function generateStream(type, id, config, userConfStr) {
         // --- FILTRAGGIO ---
         uniqueResults = uniqueResults.filter(item => {
             if (metadata.isSeries) {
-                const isTrusted = ["Tio", "KC", "MediaFusion", "BitSearch", "SolidTorrents", "YTS"].some(s => item.source.includes(s));
+                // Fiducia cieca nelle fonti Core, controlliamo External se necessario
+                const isTrusted = ["Tio", "Torrentio", "BitSearch", "SolidTorrents", "YTS", "1337x", "Apibay"].some(s => item.source.includes(s));
                 if (!isTrusted && !isExactEpisodeMatch(item.title, metadata.season, metadata.episode)) return false;
             }
             if (filters.onlyIta) {
@@ -225,8 +257,7 @@ async function generateStream(type, id, config, userConfStr) {
         // --- ORDINAMENTO ---
         uniqueResults.sort((a, b) => {
             const getRank = (item) => {
-                if (item.source.includes("Corsaro")) return 5;
-                const isIta = /\b(ita|italian)\b/i.test(item.title);
+                const isIta = /\b(ita|italian)\b/i.test(item.title) || item.source.includes("Corsaro");
                 const is4k = /2160p|4k|uhd/i.test(item.title);
                 if (isIta && (is4k || /1080p|fhd/i.test(item.title))) return 4;
                 if (is4k) return 3;
@@ -241,31 +272,52 @@ async function generateStream(type, id, config, userConfStr) {
 
         const topResults = uniqueResults.slice(0, 150); 
 
-        // --- STREAMS GENERATION ---
+        // --- GENERAZIONE STREAMS (STYLE PRO) ---
         let streams = [];
         for (const item of topResults) {
             let streamData = null;
-            if (!streamData && rd) {
-                try { streamData = await RD.getStreamLink(config.rd, item.magnet, metadata.season, metadata.episode); } catch (e) { }
-            }
-            if (!streamData && torbox) {
-                 try { streamData = await DebridX.getStreamLink(config.torbox, item.magnet); } catch (e) { }
+            let debridService = null;
+             
+            if (torbox) {
+                try {
+                    streamData = await DebridX.getStreamLink(config.torbox, item.magnet);
+                    if (streamData) debridService = 'Torbox';
+                } catch (e) { }
             }
 
+            if (!streamData && rd) {
+                try {
+                    streamData = await RD.getStreamLink(config.rd, item.magnet);
+                    if (streamData) debridService = 'RD';
+                } catch (e) { }
+            }
+            
             const fileTitle = streamData?.filename || item.title;
             const { quality, extraInfo } = extractStreamInfo(fileTitle);
             const finalSize = streamData?.size ? formatBytes(streamData.size) : (item.size || "??");
             const seeders = item.seeders || 0;
             
-            let langLabel = "GB 🇬🇧"; let flagIcon = "🇬🇧";
+            // --- UI LOGIC ---
+            let langLabel = "GB 🇬🇧"; 
+            let flagIcon = "🇬🇧";
+            
             const lowerTitle = fileTitle.toLowerCase();
             const lowerSource = item.source.toLowerCase();
 
-            if (/\b(multi|dual|md)\b/i.test(lowerTitle)) { langLabel = "GB + IT"; flagIcon = "🌐"; }
-            else if (lowerSource.includes("corsaro") || /\b(ita|italian)\b/i.test(lowerTitle)) { langLabel = "IT"; flagIcon = "🇮🇹"; }
-            else if (/\b(sub[\s._-]?ita)\b/i.test(lowerTitle)) { langLabel = "SUB IT"; flagIcon = "🇮🇹"; }
+            if (/\b(multi|dual|md)\b/i.test(lowerTitle)) {
+                langLabel = "GB + IT";
+                flagIcon = "🌐"; 
+            } else if (lowerSource.includes("corsaro") || /\b(ita|italian)\b/i.test(lowerTitle)) {
+                langLabel = "IT";
+                flagIcon = "🇮🇹";
+            } else if (/\b(sub[\s._-]?ita)\b/i.test(lowerTitle)) {
+                langLabel = "SUB IT";
+                flagIcon = "🇮🇹";
+            }
 
+            // Stile UI Pro
             const nameLine = `${flagIcon} ${langLabel}\n${item.source} ${quality}`;
+            
             let titleStr = `📂 ${fileTitle}\n`;
             titleStr += `💾 ${finalSize}   👤 ${seeders}\n`;
             titleStr += `🌐 ${flagIcon} ${langLabel}`;
@@ -273,10 +325,15 @@ async function generateStream(type, id, config, userConfStr) {
             titleStr += `\n🔗 ${item.source}`;
 
             if (streamData) {
-                streams.push({ name: nameLine, title: titleStr, url: streamData.url });
+                streams.push({
+                    name: nameLine,
+                    title: titleStr,
+                    url: streamData.url
+                });
             } else if (filters.showFake) {
                 streams.push({
                     name: nameLine,
+                    description: "❄️ Uncached. Clicca per scaricare.",
                     title: `${titleStr}\n❄️ Download (No Cache)`,
                     url: item.magnet,
                     behaviorHints: { notWebReady: true, bingeGroup: "uncached" }
@@ -289,16 +346,19 @@ async function generateStream(type, id, config, userConfStr) {
             ? { streams: [{ title: "🚫 Nessun file trovato (Verifica filtri)" }] } 
             : { streams };
 
+        console.log(`💾 Risultati finali inviati: ${streams.length}`);
         streamCache.set(cacheKey, finalResponse, streams.length > 0 ? 900 : 120);
-        return finalResponse;
 
+        return finalResponse;
     } catch (error) {
         console.error("🔥 Errore:", error.message);
         return { streams: [{ title: "Errore Interno" }] };
     }
 }
 
+// --- ROUTING ---
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
+
 app.get('/:userConf/manifest.json', (req, res) => {
     const config = getConfig(req.params.userConf);
     const m = { ...manifestBase };
@@ -309,13 +369,25 @@ app.get('/:userConf/manifest.json', (req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.json(m);
 });
-app.get('/:userConf/catalog/:type/:id.json', (req, res) => res.json({ metas: [] }));
+
+app.get('/:userConf/catalog/:type/:id.json', async (req, res) => {
+    const result = await generateCatalog(req.params.type, req.params.id, getConfig(req.params.userConf));
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Cache-Control', 'public, max-age=43200');
+    res.json(result);
+});
+
 app.get('/:userConf/stream/:type/:id.json', async (req, res) => {
-    const streams = await generateStream(req.params.type, req.params.id.replace('.json', ''), getConfig(req.params.userConf), req.params.userConf);
+    const streams = await generateStream(
+        req.params.type, 
+        req.params.id.replace('.json', ''), 
+        getConfig(req.params.userConf),
+        req.params.userConf 
+    );
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Cache-Control', 'public, max-age=120'); 
     res.json(streams);
 });
 
 const PORT = process.env.PORT || 7000;
-app.listen(PORT, () => console.log(`🚀 Addon v24.2 attivo su porta ${PORT}!`));
+app.listen(PORT, () => console.log(`Addon v23.5.0 (Stealth Edition) attivo su porta ${PORT}!`));
