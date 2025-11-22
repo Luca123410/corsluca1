@@ -9,7 +9,6 @@ const https = require('https');
 // --- MODULI ESTERNI ---
 const RD = require("./rd");
 const DebridX = require("./debridx"); // Torbox
-// NOTA: Corsaro, UIndex, Apibay sono stati eliminati perché ora sono dentro TorrentMagnet
 const TorrentMagnet = require("./torrentmagnet"); 
 const External = require("./external"); 
 
@@ -18,7 +17,7 @@ const axiosInstance = axios.create({
     timeout: 15000, 
     httpAgent: new http.Agent({ keepAlive: true }),
     httpsAgent: new https.Agent({ keepAlive: true }),
-    headers: { 'User-Agent': 'Corsaro-Alias-Hunter/23.4.16' }
+    headers: { 'User-Agent': 'Corsaro-Alias-Hunter/23.4.17' }
 });
 
 // --- CONFIGURAZIONE CACHE ---
@@ -32,9 +31,9 @@ app.use(express.static(path.join(__dirname, 'public')));
 // --- MANIFEST ---
 const manifestBase = {
     id: "org.community.corsaro-alias-hunter",
-    version: "23.4.16", 
-    name: "Corsaro + Global (Visual Fix)",
-    description: "🇮🇹 V23.4.16: Motore Unificato + Fix Etichette ITA/MULTI visibili.",
+    version: "23.4.17", 
+    name: "Corsaro + Global (Stylized UI)",
+    description: "🇮🇹 V23.4.17: UI stile 'Pro' con icone Globe, Link e Seeders.",
     resources: ["catalog", "stream"],
     types: ["movie", "series"],
     catalogs: [{ type: "movie", id: "tmdb_trending", name: "Popolari Italia" }],
@@ -77,6 +76,7 @@ const BitSearch = {
                 size: formatBytes(item.size),
                 sizeBytes: item.size,
                 magnet: item.magnet,
+                seeders: parseInt(item.seeders || 0),
                 source: "BitSearch"
             }));
         } catch (e) { return []; }
@@ -94,6 +94,7 @@ const SolidTorrents = {
                 size: formatBytes(item.size),
                 sizeBytes: item.size,
                 magnet: item.magnet,
+                seeders: parseInt(item.swarm?.seeders || 0),
                 source: "SolidTorrents"
             }));
         } catch (e) { return []; }
@@ -117,6 +118,7 @@ const YTS = {
                             size: t.size,
                             sizeBytes: t.size_bytes,
                             magnet: magnet,
+                            seeders: t.seeds || 0,
                             source: "YTS"
                         });
                     });
@@ -184,8 +186,6 @@ function extractStreamInfo(title) {
     if (t.includes("dolby vision") || t.includes("dv")) extra.push("DV");
     if (t.includes("hevc") || t.includes("x265") || t.includes("h265")) extra.push("HEVC");
     
-    // Le info sulla lingua le gestiamo direttamente nel loop finale per l'etichetta
-     
     return { quality, extraInfo: extra.join(" | ") };
 }
 
@@ -243,7 +243,7 @@ async function generateStream(type, id, config, userConfStr) {
         return streamCache.get(cacheKey);
     }
 
-    console.log(`⚡ STREAM LIVE (V23.4.16): ${id}`);
+    console.log(`⚡ STREAM LIVE (V23.4.17): ${id}`);
     if (!rd && !torbox || !tmdb) return { streams: [{ title: "⚠️ Configurazione Mancante" }] };
 
     try {
@@ -339,7 +339,7 @@ async function generateStream(type, id, config, userConfStr) {
 
         const topResults = uniqueResults.slice(0, 150); 
 
-        // --- GENERAZIONE STREAMS (FIX NOMI) ---
+        // --- GENERAZIONE STREAMS (STYLE PRO) ---
         let streams = [];
         for (const item of topResults) {
             let streamData = null;
@@ -362,30 +362,44 @@ async function generateStream(type, id, config, userConfStr) {
             const fileTitle = streamData?.filename || item.title;
             const { quality, extraInfo } = extractStreamInfo(fileTitle);
             const finalSize = streamData?.size ? formatBytes(streamData.size) : (item.size || "??");
+            const seeders = item.seeders || 0;
             
             // --- LOGICA ETICHETTE VISIVE ---
-            let langLabel = "ENG/INTL 🌐"; // Default
+            let langLabel = "GB 🇬🇧"; // Default
+            let flagIcon = "🇬🇧";
+            
             const lowerTitle = fileTitle.toLowerCase();
             const lowerSource = item.source.toLowerCase();
 
-            if (lowerSource.includes("corsaro")) {
-                langLabel = "ITA 🇮🇹";
-            } else if (/\b(multi|dual|md)\b/i.test(lowerTitle)) {
-                langLabel = "MULTI 🌐";
+            // Riconoscimento "Pro" per "GB + IT"
+            if (/\b(multi|dual|md)\b/i.test(lowerTitle)) {
+                langLabel = "GB + IT";
+                flagIcon = "🌐"; // Icona mappamondo per multi
+            } else if (lowerSource.includes("corsaro") || /\b(ita|italian)\b/i.test(lowerTitle)) {
+                langLabel = "IT";
+                flagIcon = "🇮🇹";
             } else if (/\b(sub[\s._-]?ita)\b/i.test(lowerTitle)) {
-                langLabel = "SUB ITA 🇮🇹";
-            } else if (/\b(ita|italian)\b/i.test(lowerTitle)) {
-                langLabel = "ITA 🇮🇹";
+                langLabel = "SUB IT";
+                flagIcon = "🇮🇹";
             }
 
-            // --- FORMATTAZIONE NOME STREMIO ---
-            // Formato: [ITA 🇮🇹] CorsaroNero
-            // Riga sotto: 4k [29 GB]
-            const nameLine = `[${langLabel}] ${item.source}\n${quality} [${finalSize}]`;
+            // --- FORMATTAZIONE NAME (Bottone laterale) ---
+            // Visualizza: Bandiera [Lingua]
+            //             Fonte Qualità
+            const nameLine = `${flagIcon} ${langLabel}\n${item.source} ${quality}`;
 
-            let titleStr = `📄 ${fileTitle}\n💾 ${finalSize}`;
+            // --- FORMATTAZIONE TITLE (Dettagli) ---
+            // Replica layout screenshot:
+            // 📂 Filename
+            // 💾 Size  👤 Seeds
+            // 🌐 Lingua
+            // 🔗 Source
+            
+            let titleStr = `📂 ${fileTitle}\n`;
+            titleStr += `💾 ${finalSize}   👤 ${seeders}\n`;
+            titleStr += `🌐 ${flagIcon} ${langLabel}`;
             if (extraInfo) titleStr += ` | ${extraInfo}`;
-            titleStr += `\n⚙️ ${item.source}`;
+            titleStr += `\n🔗 ${item.source}`;
 
             if (streamData) {
                 streams.push({
@@ -453,4 +467,4 @@ app.get('/:userConf/stream/:type/:id.json', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 7000;
-app.listen(PORT, () => console.log(`Addon v23.4.16 (Visual Fix) attivo su porta ${PORT}!`));
+app.listen(PORT, () => console.log(`Addon v23.4.17 (Stylized UI) attivo su porta ${PORT}!`));
