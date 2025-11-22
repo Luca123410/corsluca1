@@ -27,16 +27,16 @@ const catalogCache = new NodeCache({ stdTTL: 43200, checkperiod: 600 });
 const app = express();
 app.use(cors());
 // --- SICUREZZA SERVER ---
-app.disable('x-powered-by'); // Nasconde header Express agli scanner
+app.disable('x-powered-by'); 
 // ------------------------
 app.use(express.static(path.join(__dirname, 'public')));
 
 // --- MANIFEST ---
 const manifestBase = {
     id: "org.community.corsaro-stealth",
-    version: "23.5.0", 
+    version: "23.5.4", // Bump versione
     name: "Corsaro + Global (Stealth Edition)",
-    description: "🇮🇹 V23.5.0: Architettura Stealth. Core privato + Fallback Esterno Protetto.",
+    description: "🇮🇹 V23.5.4: Fix Serie TV (Ricerca Semplificata/Robusta) + Priorità Esterna.",
     resources: ["catalog", "stream"],
     types: ["movie", "series"],
     catalogs: [{ type: "movie", id: "tmdb_trending", name: "Popolari Italia" }],
@@ -177,12 +177,10 @@ async function generateStream(type, id, config, userConfStr) {
     const cacheKey = `stream:${userConfStr}:${type}:${id}`;
 
     if (streamCache.has(cacheKey)) {
-        // PRIVACY: Log Anonimo
         console.log(`🚀 STREAM CACHED: (Richiesta Cache Anonima)`);
         return streamCache.get(cacheKey);
     }
 
-    // PRIVACY: Log Anonimo
     console.log(`⚡ STREAM LIVE: Nuova richiesta stream elaborata`);
     
     if (!rd && !torbox || !tmdb) return { streams: [{ title: "⚠️ Configurazione Mancante" }] };
@@ -192,29 +190,59 @@ async function generateStream(type, id, config, userConfStr) {
         if (!metadata) return { streams: [{ title: "⚠️ Metadata non trovato" }] };
 
         let queries = [];
-        queries.push(`${metadata.title} ${metadata.year}`); 
-        if (metadata.aliases[1]) queries.push(`${metadata.aliases[1]} ${metadata.year}`);
+
+        // --- QUERY GENERATION (Robusta) ---
+        if (metadata.isSeries) {
+            const s = metadata.season.toString().padStart(2, '0');
+            const e = metadata.episode.toString().padStart(2, '0');
+            
+            // 1. Titolo Principale + Episodio (Più preciso)
+            queries.push(`${metadata.title} S${s}E${e}`); 
+            // 2. Primo Alias + Episodio (Per titoli come 'Stranger Things 2')
+            if (metadata.aliases[1]) queries.push(`${metadata.aliases[1]} S${s}E${e}`);
+            // 3. Titolo Principale + Pack Stagione (Fallback)
+            queries.push(`${metadata.title} S${s}`);      
+        } else {
+            // Se è un film, Titolo + Anno
+            queries.push(`${metadata.title} ${metadata.year}`); 
+        }
 
         const safeSearch = (promise) => {
             return new Promise(resolve => {
-                const timeout = setTimeout(() => resolve([]), 9000); // 9 sec timeout totale
+                const timeout = setTimeout(() => resolve([]), 9000); 
                 promise.then(res => { clearTimeout(timeout); resolve(res); })
                         .catch(() => { clearTimeout(timeout); resolve([]); });
             });
         };
 
-        let promises = [];
+        // --- FIX: Passiamo null per anno alle serie per non filtrare file validi ---
+        const yearFilter = metadata.isSeries ? null : metadata.year;
         
-        // 1. 🔥 TorrentMagnet (CORE)
-        promises.push(safeSearch(TorrentMagnet.searchMagnet(queries[0], metadata.year)));
+        // 1. 🔥 ESEGUI RICERCA CORE (TorrentMagnet) con le 3 query migliori
+        let corePromises = [];
+        
+        // Esegui la ricerca Core per le TOP 3 query generate.
+        queries.slice(0, 3).forEach(q => {
+             corePromises.push(safeSearch(TorrentMagnet.searchMagnet(q, yearFilter))); 
+        });
+        
+        const coreResultsArray = await Promise.all(corePromises);
+        let allResults = coreResultsArray.flat();
 
-        // 2. 🌍 External (GLOBAL FALLBACK)
-        if (!filters.onlyIta) {
-             promises.push(safeSearch(External.searchMagnet(id, type, metadata.imdb_id, queries[0]))); 
+        // 2. 🌍 ESEGUI RICERCA ESTERNA (SOLO SE RISULTATI CORE < 2)
+        const initialCount = allResults.length;
+
+        if (initialCount < 2) { // PRIORITY FILTER
+            let externalPromises = [];
+            
+            if (!filters.onlyIta) {
+                 // Usa la query primaria (queries[0]) per la ricerca esterna
+                 externalPromises.push(safeSearch(External.searchMagnet(id, type, metadata.imdb_id, queries[0]))); 
+            }
+            
+            const externalResultsArray = await Promise.all(externalPromises);
+            allResults.push(...externalResultsArray.flat());
         }
-
-        const resultsArray = await Promise.all(promises);
-        let allResults = resultsArray.flat();
 
         // --- DEDUPLICAZIONE ---
         let uniqueMap = new Map();
@@ -242,9 +270,11 @@ async function generateStream(type, id, config, userConfStr) {
         // --- FILTRAGGIO ---
         uniqueResults = uniqueResults.filter(item => {
             if (metadata.isSeries) {
-                const isTrusted = ["Tio", "Torrentio", "BitSearch", "SolidTorrents", "YTS", "1337x", "Apibay"].some(s => item.source.includes(s));
+                const isTrusted = ["Tio", "Torrentio", "BitSearch", "SolidTorrents", "YTS"].some(s => item.source.includes(s));
                 if (!isTrusted && !isExactEpisodeMatch(item.title, metadata.season, metadata.episode)) return false;
             }
+            
+            // --- FILTRO LINGUA (Stesso di prima, basato su onlyIta) ---
             if (filters.onlyIta) {
                  const t = item.title.toLowerCase();
                  if (item.source.includes("Corsaro")) return true;
@@ -267,7 +297,7 @@ async function generateStream(type, id, config, userConfStr) {
             const rA = getRank(a);
             const rB = getRank(b);
             if (rA !== rB) return rB - rA;
-            return (b.sizeBytes || 0) - (a.sizeBytes || 0);
+            return (b.seeders !== a.seeders) ? b.seeders - a.seeders : (b.sizeBytes || 0) - (a.sizeBytes || 0); 
         });
 
         const topResults = uniqueResults.slice(0, 150); 
@@ -276,19 +306,16 @@ async function generateStream(type, id, config, userConfStr) {
         let streams = [];
         for (const item of topResults) {
             let streamData = null;
-            let debridService = null;
              
             if (torbox) {
                 try {
                     streamData = await DebridX.getStreamLink(config.torbox, item.magnet);
-                    if (streamData) debridService = 'Torbox';
                 } catch (e) { }
             }
 
             if (!streamData && rd) {
                 try {
                     streamData = await RD.getStreamLink(config.rd, item.magnet);
-                    if (streamData) debridService = 'RD';
                 } catch (e) { }
             }
             
@@ -315,7 +342,7 @@ async function generateStream(type, id, config, userConfStr) {
                 flagIcon = "🇮🇹";
             }
 
-            // Stile UI Pro
+            // Stile UI
             const nameLine = `${flagIcon} ${langLabel}\n${item.source} ${quality}`;
             
             let titleStr = `📂 ${fileTitle}\n`;
@@ -346,7 +373,7 @@ async function generateStream(type, id, config, userConfStr) {
             ? { streams: [{ title: "🚫 Nessun file trovato (Verifica filtri)" }] } 
             : { streams };
 
-        console.log(`💾 Risultati finali inviati: ${streams.length}`); // Questo va bene, non logga dati sensibili
+        console.log(`💾 Risultati finali inviati: ${streams.length}`);
         streamCache.set(cacheKey, finalResponse, streams.length > 0 ? 900 : 120);
 
         return finalResponse;
@@ -370,9 +397,7 @@ app.get('/:userConf/manifest.json', (req, res) => {
     res.json(m);
 });
 
-// NOTA: Rimuovi cataloghi se non usati per evitare errori
 app.get('/:userConf/catalog/:type/:id.json', async (req, res) => {
-    // Logica catalogo omessa come da originale se non implementata
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.json({ metas: [] });
 });
@@ -390,4 +415,4 @@ app.get('/:userConf/stream/:type/:id.json', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 7000;
-app.listen(PORT, () => console.log(`Addon v23.5.0 (Stealth Edition) attivo su porta ${PORT}!`));
+app.listen(PORT, () => console.log(`Addon v23.5.4 (Series Robust) attivo su porta ${PORT}!`));
