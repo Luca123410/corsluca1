@@ -17,10 +17,10 @@ const External = require("./external");
 
 // --- CONFIGURAZIONE NETWORK OTTIMIZZATA ---
 const axiosInstance = axios.create({
-    timeout: 15000, // 15s timeout
+    timeout: 15000, 
     httpAgent: new http.Agent({ keepAlive: true }),
     httpsAgent: new https.Agent({ keepAlive: true }),
-    headers: { 'User-Agent': 'Corsaro-Alias-Hunter/23.4.10' }
+    headers: { 'User-Agent': 'Corsaro-Alias-Hunter/23.4.11' }
 });
 
 // --- CONFIGURAZIONE CACHE ---
@@ -34,9 +34,9 @@ app.use(express.static(path.join(__dirname, 'public')));
 // --- MANIFEST ---
 const manifestBase = {
     id: "org.community.corsaro-alias-hunter",
-    version: "23.4.10", // Bump versione (Crash Fix)
+    version: "23.4.11", // Bump versione
     name: "Corsaro + Global (ALIAS HUNTER)",
-    description: "🇮🇹 V23.4.10: Fix Crash su magnet mancanti. Corsaro King + Global Flood (YTS, Solid, 1337x).",
+    description: "🇮🇹 V23.4.11: Smart Ranking. Priorità: ITA HD > GLOBAL 4K > ITA SD. Il 720p ITA non blocca più il 4K Globale.",
     resources: ["catalog", "stream"],
     types: ["movie", "series"],
     catalogs: [{ type: "movie", id: "tmdb_trending", name: "Popolari Italia" }],
@@ -68,9 +68,8 @@ function getConfig(configStr) {
     } catch (e) { return {}; }
 }
 
-// --- NUOVI PROVIDER GLOBALI ---
+// --- PROVIDER GLOBALI ---
 
-// 1. BITSEARCH (1337x / Galaxy)
 const BitSearch = {
     searchMagnet: async (query) => {
         try {
@@ -88,7 +87,6 @@ const BitSearch = {
     }
 };
 
-// 2. SOLIDTORRENTS
 const SolidTorrents = {
     searchMagnet: async (query) => {
         try {
@@ -106,7 +104,6 @@ const SolidTorrents = {
     }
 };
 
-// 3. YTS (Solo Film)
 const YTS = {
     searchMagnet: async (imdbId) => {
         if (!imdbId || !imdbId.startsWith('tt')) return [];
@@ -277,7 +274,7 @@ async function generateStream(type, id, config, userConfStr) {
         return streamCache.get(cacheKey);
     }
 
-    console.log(`⚡ STREAM LIVE (V23.4.10): ${id}`);
+    console.log(`⚡ STREAM LIVE (V23.4.11): ${id}`);
     if (!rd && !torbox || !tmdb) return { streams: [{ title: "⚠️ Configurazione Mancante" }] };
 
     try {
@@ -312,13 +309,11 @@ async function generateStream(type, id, config, userConfStr) {
         };
 
         let promises = [];
-        
         // Fonti Italiane
         queries.forEach(q => {
             promises.push(safeSearch(Corsaro.searchMagnet(q, metadata.year)));
             promises.push(safeSearch(UIndex.searchMagnet(q, metadata.year)));
         });
-
         // Fonti Globali
         if (!filters.onlyIta) {
             promises.push(safeSearch(BitSearch.searchMagnet(queries[0])));
@@ -339,12 +334,9 @@ async function generateStream(type, id, config, userConfStr) {
         const italianSources = ["Corsaro", "UIndex", "IlCorsaroNero"];
 
         for (const item of allResults) {
-            // 🔥 SAFETY CHECK PER EVITARE IL CRASH 🔥
             if (!item || !item.magnet) continue;
-
             const hashMatch = item.magnet.match(/btih:([A-F0-9]{40})/i);
             const key = hashMatch ? hashMatch[1].toUpperCase() : item.magnet;
-            
             const isIta = italianSources.some(s => item.source.includes(s));
 
             if (!uniqueMap.has(key)) {
@@ -352,10 +344,7 @@ async function generateStream(type, id, config, userConfStr) {
             } else {
                 const existing = uniqueMap.get(key);
                 const existingIsIta = italianSources.some(s => existing.source.includes(s));
-                // Vince sempre l'italiano
-                if (isIta && !existingIsIta) {
-                    uniqueMap.set(key, item); 
-                }
+                if (isIta && !existingIsIta) uniqueMap.set(key, item); 
             }
         }
         let uniqueResults = Array.from(uniqueMap.values());
@@ -384,31 +373,38 @@ async function generateStream(type, id, config, userConfStr) {
             uniqueResults = uniqueResults.filter(i => !bad.some(q => i.title.toLowerCase().includes(q)));
         }
 
-        // --- ORDINAMENTO (Corsaro > Global ITA > Global Rest) ---
-        let pureIta = [];
-        let globalIta = [];
-        let globalRest = [];
+        // --- 🔥 ORDINAMENTO PER RANKING (La tua richiesta) 🔥 ---
+        uniqueResults.sort((a, b) => {
+            // Calcoliamo il "Rank" per ogni file
+            const getRank = (item) => {
+                const isIta = italianSources.some(s => item.source.includes(s)) || /\b(ita|italian)\b/i.test(item.title);
+                const is4k = /2160p|4k|uhd/i.test(item.title);
+                const is1080 = /1080p|fhd/i.test(item.title);
 
-        uniqueResults.forEach(item => {
-             const isCorsaro = italianSources.some(s => item.source.includes(s));
-             const hasExplicitIta = /\b(ita|italian)\b/i.test(item.title);
+                // 1. ORO: Italiano in alta qualità (4K o 1080p)
+                if (isIta && (is4k || is1080)) return 4;
+                
+                // 2. ARGENTO: Global 4K (Supera l'Italiano brutto)
+                if (is4k) return 3;
+                
+                // 3. BRONZO: Italiano bassa qualità (720p, SD, o sconosciuto)
+                if (isIta) return 2;
+                
+                // 4. RESTO: Global 1080p/720p/SD
+                return 1;
+            };
 
-             if (isCorsaro) {
-                 pureIta.push(item);
-             } else if (hasExplicitIta) {
-                 globalIta.push(item);
-             } else {
-                 globalRest.push(item);
-             }
+            const rankA = getRank(a);
+            const rankB = getRank(b);
+
+            // Se i rank sono diversi, vince quello più alto
+            if (rankA !== rankB) return rankB - rankA;
+
+            // Se i rank sono uguali (es. due file Global 4K), vince il più grande
+            return (b.sizeBytes || 0) - (a.sizeBytes || 0);
         });
 
-        const sortBySize = (a, b) => (b.sizeBytes || 0) - (a.sizeBytes || 0);
-        pureIta.sort(sortBySize);
-        globalIta.sort(sortBySize);
-        globalRest.sort(sortBySize);
-
-        const finalSorted = [...pureIta, ...globalIta, ...globalRest];
-        const topResults = finalSorted.slice(0, 150); 
+        const topResults = uniqueResults.slice(0, 150); 
 
         // --- VERIFICA DEBRID ---
         let streams = [];
@@ -518,4 +514,4 @@ app.get('/:userConf/stream/:type/:id.json', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 7000;
-app.listen(PORT, () => console.log(`Addon Alias Hunter v23.4.10 (Crash Fixed) avviato su porta ${PORT}!`));
+app.listen(PORT, () => console.log(`Addon Alias Hunter v23.4.11 (Smart Ranking) avviato su porta ${PORT}!`));
