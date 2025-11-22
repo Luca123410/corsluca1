@@ -9,18 +9,16 @@ const https = require('https');
 // --- MODULI ESTERNI ---
 const RD = require("./rd");
 const DebridX = require("./debridx"); // Torbox
-const Corsaro = require("./corsaro");
-const Apibay = require("./apibay");
-const TorrentMagnet = require("./torrentmagnet");
-const UIndex = require("./uindex"); 
+// NOTA: Corsaro, UIndex, Apibay sono stati eliminati perché ora sono dentro TorrentMagnet
+const TorrentMagnet = require("./torrentmagnet"); 
 const External = require("./external"); 
 
-// --- CONFIGURAZIONE NETWORK OTTIMIZZATA ---
+// --- CONFIGURAZIONE NETWORK ---
 const axiosInstance = axios.create({
     timeout: 15000, 
     httpAgent: new http.Agent({ keepAlive: true }),
     httpsAgent: new https.Agent({ keepAlive: true }),
-    headers: { 'User-Agent': 'Corsaro-Alias-Hunter/23.4.11' }
+    headers: { 'User-Agent': 'Corsaro-Alias-Hunter/23.4.15' }
 });
 
 // --- CONFIGURAZIONE CACHE ---
@@ -34,9 +32,9 @@ app.use(express.static(path.join(__dirname, 'public')));
 // --- MANIFEST ---
 const manifestBase = {
     id: "org.community.corsaro-alias-hunter",
-    version: "23.4.11", // Bump versione
-    name: "Corsaro + Global (ALIAS HUNTER)",
-    description: "🇮🇹 V23.4.11: Smart Ranking. Priorità: ITA HD > GLOBAL 4K > ITA SD. Il 720p ITA non blocca più il 4K Globale.",
+    version: "23.4.15", 
+    name: "Corsaro + Global (Frankenstein Edition)",
+    description: "🇮🇹 V23.4.15: Motore Unificato. Include Corsaro, 1337x, TPB, Knaben, UIndex. Regex ITA Potenziata.",
     resources: ["catalog", "stream"],
     types: ["movie", "series"],
     catalogs: [{ type: "movie", id: "tmdb_trending", name: "Popolari Italia" }],
@@ -46,7 +44,6 @@ const manifestBase = {
 
 // --- UTILITIES ---
 const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-const REAL_SIZE_FILTER = 200 * 1024 * 1024; 
 
 function formatBytes(bytes) {
     if (!+bytes) return '0 B';
@@ -68,8 +65,7 @@ function getConfig(configStr) {
     } catch (e) { return {}; }
 }
 
-// --- PROVIDER GLOBALI ---
-
+// --- PROVIDER GLOBALI (Backup) ---
 const BitSearch = {
     searchMagnet: async (query) => {
         try {
@@ -111,12 +107,11 @@ const YTS = {
             const url = `https://yts.mx/api/v2/list_movies.json?query_term=${imdbId}`;
             const { data } = await axiosInstance.get(url);
             if (!data || !data.data || !data.data.movies) return [];
-            
             let results = [];
             data.data.movies.forEach(movie => {
                 if (movie.torrents) {
                     movie.torrents.forEach(t => {
-                        const magnet = `magnet:?xt=urn:btih:${t.hash}&dn=${encodeURIComponent(movie.title)}&tr=udp://open.demonii.com:1337/announce&tr=udp://tracker.openbittorrent.com:80`;
+                        const magnet = `magnet:?xt=urn:btih:${t.hash}&dn=${encodeURIComponent(movie.title)}&tr=udp://open.demonii.com:1337/announce`;
                         results.push({
                             title: `${movie.title} ${t.quality} ${t.type.toUpperCase()} YTS`,
                             size: t.size,
@@ -188,16 +183,12 @@ function extractStreamInfo(title) {
     if (t.includes("hdr")) extra.push("HDR");
     if (t.includes("dolby vision") || t.includes("dv")) extra.push("DV");
     if (t.includes("hevc") || t.includes("x265") || t.includes("h265")) extra.push("HEVC");
-    if (t.includes("remux")) extra.push("REMUX");
     
-    if (t.includes("atmos")) extra.push("Atmos");
-    else if (t.includes("ddp") || t.includes("eac3")) extra.push("DDP");
-    else if (t.includes("5.1") || t.includes("ac3")) extra.push("5.1");
-
+    // Regex ITA Potenziata per il display
+    const itaRegex = /\b(ita|italian|italiano|multi|dual|md|sub[\s._-]?ita|forced|ac3[\s._-]?ita|dts[\s._-]?ita)\b/i;
+    
     let lang = [];
-    if (t.includes("ita")) lang.push("ITA 🇮🇹");
-    if (t.includes("sub ita") || t.includes("sub.ita")) lang.push("SUB 🇮🇹");
-    if (t.includes("multi") || t.includes("dual")) lang.push("MULTI 🌐");
+    if (itaRegex.test(t)) lang.push("ITA 🇮🇹");
      
     return { quality, lang, extraInfo: extra.join(" | ") };
 }
@@ -245,24 +236,6 @@ async function getMetadata(id, type, tmdbKey) {
     } catch (e) { return null; }
 }
 
-// --- CATALOGO ---
-async function generateCatalog(type, id, config) {
-    const cacheKey = `catalog:${type}:${id}`;
-    if (catalogCache.has(cacheKey)) return catalogCache.get(cacheKey);
-
-    if (id === "tmdb_trending" && config.tmdb) {
-        try {
-            const r = await axiosInstance.get(`https://api.themoviedb.org/3/trending/movie/day?api_key=${config.tmdb}&language=it-IT`);
-            const result = { metas: r.data.results.map(m => ({
-                id: `tmdb:${m.id}`, type: "movie", name: m.title, poster: `https://image.tmdb.org/t/p/w500${m.poster_path}`
-            }))};
-            catalogCache.set(cacheKey, result);
-            return result;
-        } catch (e) { return { metas: [] }; }
-    }
-    return { metas: [] };
-}
-
 // --- STREAM HANDLER ---
 async function generateStream(type, id, config, userConfStr) {
     const { rd, torbox, tmdb } = config || {}; 
@@ -274,7 +247,7 @@ async function generateStream(type, id, config, userConfStr) {
         return streamCache.get(cacheKey);
     }
 
-    console.log(`⚡ STREAM LIVE (V23.4.11): ${id}`);
+    console.log(`⚡ STREAM LIVE (V23.4.15): ${id}`);
     if (!rd && !torbox || !tmdb) return { streams: [{ title: "⚠️ Configurazione Mancante" }] };
 
     try {
@@ -282,131 +255,112 @@ async function generateStream(type, id, config, userConfStr) {
         if (!metadata) return { streams: [{ title: "⚠️ Metadata non trovato" }] };
 
         let queries = [];
-        const searchTitles = metadata.aliases.slice(0, 4); 
+        // Per TorrentMagnet, che è smart, basta 1 query principale + anno
+        queries.push(`${metadata.title} ${metadata.year}`); 
+        // Aggiungiamo il titolo originale per sicurezza
+        if (metadata.aliases[1]) queries.push(`${metadata.aliases[1]} ${metadata.year}`);
 
-        if (metadata.isSeries) {
-            const s = String(metadata.season).padStart(2, '0');
-            const e = String(metadata.episode).padStart(2, '0');
-            searchTitles.forEach(t => {
-                queries.push(`${t} S${s}E${e}`);
-                queries.push(`${t} Season ${metadata.season}`);
-            });
-            queries.push(`${metadata.title} Stagione ${metadata.season}`);
-        } else {
-            searchTitles.forEach(t => {
-                queries.push(`${t} ${metadata.year}`);
-            });
-        }
-        queries = [...new Set(queries)];
-
-        // --- SEARCH ---
         const safeSearch = (promise) => {
             return new Promise(resolve => {
                 const timeout = setTimeout(() => resolve([]), 8000); 
                 promise.then(res => { clearTimeout(timeout); resolve(res); })
-                       .catch(() => { clearTimeout(timeout); resolve([]); });
+                        .catch(() => { clearTimeout(timeout); resolve([]); });
             });
         };
 
         let promises = [];
-        // Fonti Italiane
-        queries.forEach(q => {
-            promises.push(safeSearch(Corsaro.searchMagnet(q, metadata.year)));
-            promises.push(safeSearch(UIndex.searchMagnet(q, metadata.year)));
-        });
-        // Fonti Globali
+        
+        // 1. 🔥 TorrentMagnet (Motore Principale)
+        // Passiamo solo la prima query (Titolo + Anno). Il file gestisce le varianti.
+        promises.push(safeSearch(TorrentMagnet.searchMagnet(queries[0], metadata.year)));
+
+        // 2. 🌍 Fonti Globali Extra
         if (!filters.onlyIta) {
             promises.push(safeSearch(BitSearch.searchMagnet(queries[0])));
             promises.push(safeSearch(SolidTorrents.searchMagnet(queries[0])));
             if (!metadata.isSeries && metadata.imdb_id) {
                 promises.push(safeSearch(YTS.searchMagnet(metadata.imdb_id)));
             }
-            promises.push(safeSearch(Apibay.searchMagnet(queries[0], metadata.year)));
-            promises.push(safeSearch(TorrentMagnet.searchMagnet(queries[0], metadata.year)));
-            promises.push(safeSearch(External.searchMagnet(id, type)));
         }
 
         const resultsArray = await Promise.all(promises);
         let allResults = resultsArray.flat();
 
+        // 3. 🚨 EMERGENZA (Fallback)
+        if (allResults.length === 0 && !filters.onlyIta) {
+            console.log(`🚨 EMERGENZA: External attivato per ${id}...`);
+            try {
+                const extResults = await safeSearch(External.searchMagnet(id, type));
+                if (extResults.length > 0) allResults = allResults.concat(extResults);
+            } catch (e) {}
+        }
+
         // --- DEDUPLICAZIONE ---
         let uniqueMap = new Map();
-        const italianSources = ["Corsaro", "UIndex", "IlCorsaroNero"];
+        const prioritySources = ["Corsaro", "CorsaroNero", "UIndex", "Knaben", "1337x", "Apibay"]; 
 
         for (const item of allResults) {
             if (!item || !item.magnet) continue;
             const hashMatch = item.magnet.match(/btih:([A-F0-9]{40})/i);
             const key = hashMatch ? hashMatch[1].toUpperCase() : item.magnet;
-            const isIta = italianSources.some(s => item.source.includes(s));
+            
+            const isPriority = prioritySources.some(s => item.source.includes(s));
 
             if (!uniqueMap.has(key)) {
                 uniqueMap.set(key, item);
             } else {
                 const existing = uniqueMap.get(key);
-                const existingIsIta = italianSources.some(s => existing.source.includes(s));
-                if (isIta && !existingIsIta) uniqueMap.set(key, item); 
+                const existingIsPriority = prioritySources.some(s => existing.source.includes(s));
+                
+                // Logica di sovrascrittura: Se il nuovo è priorità e il vecchio no -> Sostituisci
+                if (isPriority && !existingIsPriority) uniqueMap.set(key, item);
+                // Se entrambi sono priorità, tieni quello con più seeders
+                else if (isPriority && existingIsPriority && (item.seeders > existing.seeders)) uniqueMap.set(key, item);
             }
         }
         let uniqueResults = Array.from(uniqueMap.values());
 
-        // --- FILTRAGGIO ---
+        // --- FILTRAGGIO (Con Regex Aggiornata!) ---
         uniqueResults = uniqueResults.filter(item => {
             if (metadata.isSeries) {
-                const isTrustedSource = ["Tio", "Torrentio", "KC", "MF", "MediaFusion", "BitSearch", "SolidTorrents", "YTS"].some(s => item.source.includes(s));
-                if (!isTrustedSource && !isExactEpisodeMatch(item.title, metadata.season, metadata.episode)) {
-                    return false;
-                }
+                const isTrusted = ["Tio", "Torrentio", "BitSearch", "SolidTorrents", "YTS"].some(s => item.source.includes(s));
+                // Le fonti di TorrentMagnet sono già filtrate internamente
+                if (!isTrusted && !isExactEpisodeMatch(item.title, metadata.season, metadata.episode)) return false;
             }
             
             if (filters.onlyIta) {
                  const t = item.title.toLowerCase();
-                 const isItalianSource = italianSources.some(s => item.source.includes(s));
-                 const hasSafeTag = /\b(ita|italian|multi|dual)\b/i.test(t);
-                 return isItalianSource || hasSafeTag;
+                 // Se la fonte è Corsaro, è ITA sicuro.
+                 if (item.source.includes("Corsaro")) return true;
+
+                 // Regex Potente per intercettare tutto (MD, DL, Cinefile...)
+                 // Questa è fondamentale per non perdere i risultati di TorrentMagnet
+                 const advancedItaRegex = /\b(ita|italian|italiano|multi|dual|md|sub[\s._-]?ita|forced|ac3[\s._-]?ita|dts[\s._-]?ita|cinefile|novarip|mem|robbyrs|idn_crew|pso|badass)\b/i;
+                 
+                 return advancedItaRegex.test(t);
             }
             return true;
         });
 
-        if (filters.no4k) uniqueResults = uniqueResults.filter(i => !/2160p|4k|uhd/i.test(i.title));
-        if (filters.noCam) {
-            const bad = ['cam', 'dvdscr', 'hdcam', 'telesync', 'tc', 'ts'];
-            uniqueResults = uniqueResults.filter(i => !bad.some(q => i.title.toLowerCase().includes(q)));
-        }
-
-        // --- 🔥 ORDINAMENTO PER RANKING (La tua richiesta) 🔥 ---
+        // --- ORDINAMENTO ---
         uniqueResults.sort((a, b) => {
-            // Calcoliamo il "Rank" per ogni file
             const getRank = (item) => {
-                const isIta = italianSources.some(s => item.source.includes(s)) || /\b(ita|italian)\b/i.test(item.title);
+                const isIta = /\b(ita|italian)\b/i.test(item.title) || item.source.includes("Corsaro");
                 const is4k = /2160p|4k|uhd/i.test(item.title);
-                const is1080 = /1080p|fhd/i.test(item.title);
-
-                // 1. ORO: Italiano in alta qualità (4K o 1080p)
-                if (isIta && (is4k || is1080)) return 4;
-                
-                // 2. ARGENTO: Global 4K (Supera l'Italiano brutto)
+                if (isIta && (is4k || /1080p|fhd/i.test(item.title))) return 4;
                 if (is4k) return 3;
-                
-                // 3. BRONZO: Italiano bassa qualità (720p, SD, o sconosciuto)
                 if (isIta) return 2;
-                
-                // 4. RESTO: Global 1080p/720p/SD
                 return 1;
             };
-
-            const rankA = getRank(a);
-            const rankB = getRank(b);
-
-            // Se i rank sono diversi, vince quello più alto
-            if (rankA !== rankB) return rankB - rankA;
-
-            // Se i rank sono uguali (es. due file Global 4K), vince il più grande
+            const rA = getRank(a);
+            const rB = getRank(b);
+            if (rA !== rB) return rB - rA;
             return (b.sizeBytes || 0) - (a.sizeBytes || 0);
         });
 
         const topResults = uniqueResults.slice(0, 150); 
 
-        // --- VERIFICA DEBRID ---
+        // --- GENERAZIONE STREAMS ---
         let streams = [];
         for (const item of topResults) {
             let streamData = null;
@@ -415,68 +369,60 @@ async function generateStream(type, id, config, userConfStr) {
             if (torbox) {
                 try {
                     streamData = await DebridX.getStreamLink(config.torbox, item.magnet);
-                    if (streamData) debridService = 'Torbox 🌐';
+                    if (streamData) debridService = 'Torbox';
                 } catch (e) { }
             }
 
             if (!streamData && rd) {
                 try {
                     streamData = await RD.getStreamLink(config.rd, item.magnet);
-                    if (streamData) debridService = 'RD ⚡';
+                    if (streamData) debridService = 'RD';
                 } catch (e) { }
             }
             
             const fileTitle = streamData?.filename || item.title;
-            const { quality, lang, extraInfo } = extractStreamInfo(fileTitle);
-            
-            const isCorsaro = italianSources.some(s => item.source.includes(s));
-            let displayLang = lang.length > 0 ? lang.join(" / ") : (isCorsaro ? "ITA 🇮🇹" : "Multi/Eng 🌐");
+            const { quality, extraInfo } = extractStreamInfo(fileTitle);
+            const finalSize = streamData?.size ? formatBytes(streamData.size) : (item.size || "??");
 
-            let finalSize = streamData?.size ? formatBytes(streamData.size) : (item.size || "?? GB");
-            if (!streamData && (finalSize.includes("MB") && parseInt(finalSize) < 100)) finalSize = "?? GB"; 
+            const isIta = /\b(ita|italian)\b/i.test(fileTitle) || item.source.includes("Corsaro");
+            const emoji = isIta ? "🇮🇹" : "🌐";
+            
+            // TRUCCO PER STREMIO: Aggiungi la dimensione nel nome per evitare raggruppamenti indesiderati
+            const nameLine = `${emoji} [${debridService || "P2P"}] ${item.source}\n[${finalSize}] ${quality}`;
 
             let titleStr = `📄 ${fileTitle}\n💾 ${finalSize}`;
             if (extraInfo) titleStr += ` | ${extraInfo}`;
-            titleStr += `\n⚙️ ${item.source}\n🔊 ${displayLang}`;
-
-            let emojiSource = isCorsaro ? "🇮🇹" : (displayLang.includes("ITA") ? "🇮🇹" : "🌐");
+            titleStr += `\n⚙️ ${item.source}`;
 
             if (streamData) {
                 streams.push({
-                    name: `${emojiSource} [${debridService}] ${item.source}\n${quality}`,
+                    name: nameLine,
                     title: titleStr,
-                    url: streamData.url,
-                    behaviorHints: { notWebReady: false }
+                    url: streamData.url
                 });
-            } else if (filters.showFake) {
+            } else if (filters.showFake) { // Assicurati che "Mostra Link Download" sia ATTIVO nella config
                 streams.push({
-                    name: `${emojiSource} [📥 DOWNLOAD] ${item.source}\n${quality}`,
+                    name: nameLine,
                     description: "❄️ Uncached. Clicca per scaricare.",
-                    title: `${titleStr}\n❄️ Non in Cache (Richiede Download)`,
+                    title: `${titleStr}\n❄️ Download (No Cache)`,
                     url: item.magnet,
                     behaviorHints: { notWebReady: true, bingeGroup: "uncached" }
                 });
             }
-            await wait(5); 
+            await wait(2); 
         }
 
         const finalResponse = streams.length === 0 
-            ? { streams: [{ title: "🚫 Nessun file trovato." }] } 
+            ? { streams: [{ title: "🚫 Nessun file trovato (Verifica filtri)" }] } 
             : { streams };
 
-        const hasValidLinks = streams.some(s => s.url && !s.url.startsWith('magnet:'));
-        const jitter = Math.floor(Math.random() * 120) - 60; 
-        const dynamicTTL = hasValidLinks ? (900 + jitter) : 120;
-
-        console.log(`💾 Caching Result per ${id}: ${dynamicTTL}s (Items: ${streams.length})`);
-        streamCache.set(cacheKey, finalResponse, dynamicTTL);
+        console.log(`💾 Risultati finali inviati: ${streams.length}`);
+        streamCache.set(cacheKey, finalResponse, streams.length > 0 ? 900 : 120);
 
         return finalResponse;
     } catch (error) {
-        console.error("🔥 Errore fatale:", error.message);
-        const errorResp = { streams: [{ title: "Errore Interno (Riprova)" }] };
-        streamCache.set(cacheKey, errorResp, 60); 
-        return errorResp;
+        console.error("🔥 Errore:", error.message);
+        return { streams: [{ title: "Errore Interno" }] };
     }
 }
 
@@ -514,4 +460,4 @@ app.get('/:userConf/stream/:type/:id.json', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 7000;
-app.listen(PORT, () => console.log(`Addon Alias Hunter v23.4.11 (Smart Ranking) avviato su porta ${PORT}!`));
+app.listen(PORT, () => console.log(`Addon v23.4.15 (Frankenstein) attivo su porta ${PORT}!`));
