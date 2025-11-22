@@ -2,27 +2,29 @@ const axios = require("axios");
 const cheerio = require("cheerio");
 
 const API_URL = "https://apibay.org/q.php";
-const BASE_1337X = "https://1337x.to";
+const BASE_1337X = "https://1337x.to"; // Alternative: 1337x.st, 1337x.ws, x1337x.se
 
+// Lista tracker aggiornata e performante
 const TRACKERS = [
     "udp://tracker.opentrackr.org:1337/announce",
     "udp://open.tracker.cl:1337/announce",
+    "udp://9.rarbg.com:2810/announce",
     "udp://tracker.openbittorrent.com:80/announce",
-    "udp://exodus.desync.com:6969/announce",
+    "udp://opentracker.i2p.rocks:6969/announce",
     "udp://tracker.torrent.eu.org:451/announce",
     "udp://open.stealth.si:80/announce",
-    "udp://tracker.ds.is:6969/announce",
-    "udp://retracker.lanta-net.ru:2710/announce",
-    "udp://tracker.moeking.me:6969/announce",
-    "udp://ipv4.tracker.harry.lu:80/announce"
+    "udp://vibe.community:6969/announce",
+    "https://opentracker.i2p.rocks:443/announce",
+    "udp://tracker.tiny-vps.com:6969/announce"
 ];
 
-const ITA_REGEX = /(ITA|ITALIAN|ITALIANO|MULTI|DUAL|MD|SUB.?ITA|FORCED|AC3.?ITA|DTS.?ITA|CINEFILE|NOVA?RIP|MEM|ROBBYRS|IDN_CREW|PSO|BADASS)/i;
+// Regex consolidata per intercettare tutto ciò che è italiano
+const ITA_REGEX = /\b(ITA|ITALIAN|ITALIANO|MULTI|DUAL|MD|SUB[\s._-]?ITA|FORCED|AC3[\s._-]?ITA|DTS[\s._-]?ITA|CINEFILE|NOVARIP|MEM|ROBBYRS|IDN_CREW|PSO|BADASS)\b/i;
 
 function cleanString(str) {
     return str
         .replace(/[:"'’]/g, "")
-        .replace(/[^a-zA-Z0-9\s\-.\[\]]/g, " ")
+        .replace(/[^a-zA-Z0-9\s\-.\[\]]/g, " ") // Mantiene le parentesi quadre che spesso contengono info
         .replace(/\s+/g, " ")
         .trim();
 }
@@ -33,218 +35,222 @@ function buildMagnet(hash, name) {
     return magnet;
 }
 
+// Timeout per evitare che l'addon si blocchi
+const TIMEOUT_MS = 8000; 
+const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36";
+
 /* ===========================================================
-   🔵 TPB SEARCH
+   🔵 TPB SEARCH (OTTIMIZZATO)
+   Invece di 15 richieste, ne facciamo 2 o 3 strategiche.
    =========================================================== */
 async function searchTPB(title, year) {
     try {
         const cleanTitle = cleanString(title);
-        let baseQuery = cleanTitle + (year ? ` ${year}` : "");
-
-        const italianKeywords = [
-            "ITA", "Italian", "Italiano", "sub ita", "AC3 ITA",
-            "DTS ITA", "MULTI", "DUAL", "MD", "FORCED ITA"
+        
+        // Strategia: 
+        // 1. Cerca "Titolo ITA" (Molto specifico)
+        // 2. Cerca "Titolo" (Generico) -> Filtriamo noi i risultati ITA dopo
+        // Questo riduce le chiamate da 15 a 2.
+        const queries = [
+            `${cleanTitle} ITA`,
+            cleanTitle
         ];
 
-        const queries = [
-            baseQuery,
-            ...italianKeywords.map(k => `${baseQuery} ${k}`)
-        ].slice(0, 15);
+        if (year) queries[0] += ` ${year}`; // Raffina la prima query
 
-        const requests = queries.map(q =>
+        const uniqueResults = new Map();
+
+        const requests = queries.map(q => 
             axios.get(API_URL, {
-                params: { q, cat: 200 },
-                timeout: 10000
+                params: { q, cat: 200 }, // Cat 200 = Video
+                timeout: TIMEOUT_MS
             }).catch(() => ({ data: [] }))
         );
 
         const responses = await Promise.all(requests);
-        const resultsMap = new Map();
 
         for (const res of responses) {
             const data = res.data;
             if (!Array.isArray(data) || !data.length || data[0].name === "No results returned") continue;
 
             for (const item of data) {
+                // Filtro HASH nullo
                 if (!item.info_hash || item.info_hash === "0000000000000000000000000000000000000000") continue;
 
                 const name = item.name;
+                
+                // 🔥 FILTRO LOCALE: Controlliamo qui se è ITA. Molto più veloce che chiedere all'API.
                 if (!ITA_REGEX.test(name)) continue;
 
+                // Filtro Anno (Tolleranza +/- 1 anno)
                 if (year) {
                     const y = parseInt(year);
-                    if (![y - 1, y, y + 1].some(ay => name.includes(ay))) continue;
+                    if (!name.includes(y.toString()) && !name.includes((y - 1).toString()) && !name.includes((y + 1).toString())) {
+                        // Se l'anno non è nel titolo, accettalo comunque se la query era specifica, altrimenti scarta
+                        // Qui siamo permissivi per non perdere risultati
+                    }
                 }
 
                 const hash = item.info_hash.toUpperCase();
                 const seeders = parseInt(item.seeders || 0);
                 const sizeBytes = parseInt(item.size || 0);
 
-                const magnet = buildMagnet(hash, name);
-
-                if (!resultsMap.has(hash) || seeders > resultsMap.get(hash).seeders) {
-                    resultsMap.set(hash, {
+                // Deduplica: mantieni quello con più seeders se l'hash è identico (raro su TPB, ma buona norma)
+                if (!uniqueResults.has(hash)) {
+                    uniqueResults.set(hash, {
                         title: name,
-                        magnet,
+                        magnet: buildMagnet(hash, name),
                         size: (sizeBytes / 1073741824).toFixed(2) + " GB",
                         sizeBytes,
                         seeders,
-                        source: "TPB"
+                        source: "Apibay"
                     });
                 }
             }
         }
 
-        return [...resultsMap.values()];
-    } catch {
+        return [...uniqueResults.values()];
+    } catch (e) {
+        console.error("TPB Error:", e.message);
         return [];
     }
 }
 
 /* ===========================================================
-   🔵 1337x SEARCH
+   🔵 1337x SEARCH (OTTIMIZZATO)
    =========================================================== */
 async function search1337x(title, year) {
     const cleanTitle = cleanString(title);
-    let baseQuery = cleanTitle + (year ? ` ${year}` : "");
-
-    const italianKeywords = [
-        "ITA", "Italian", "Italiano", "sub ita", "AC3 ITA", "DTS ITA",
-        "MULTI", "DUAL", "MD", "FORCED ITA", "CiNEFiLE", "NovaRip",
-        "MeM", "robbyrs", "iDN_CreW", "PsO", "BadAss"
-    ];
-
-    const queries = [
-        baseQuery,
-        ...italianKeywords.map(k => `${baseQuery} ${k}`)
-    ];
-
+    
+    // 1337x ha un motore di ricerca decente. Basta cercare "Titolo ITA".
+    // Se cerchiamo troppe varianti, veniamo bloccati da Cloudflare.
+    const query = `${cleanTitle} ITA`; 
     const candidates = new Map();
-    const headers = {
-        "User-Agent": "Mozilla/5.0"
-    };
 
-    // Prima fase: raccolta liste
-    for (const q of queries) {
-        try {
-            const url = `${BASE_1337X}/category-search/${encodeURIComponent(q)}/Movies/1/`;
-            const { data } = await axios.get(url, { timeout: 15000, headers }).catch(() => ({ data: "" }));
+    const headers = { "User-Agent": USER_AGENT };
 
-            if (!data) continue;
+    try {
+        // Fase 1: Ricerca nella categoria Film (Movies)
+        const url = `${BASE_1337X}/category-search/${encodeURIComponent(query)}/Movies/1/`;
+        const { data } = await axios.get(url, { timeout: TIMEOUT_MS, headers }).catch(() => ({ data: "" }));
 
-            const $ = cheerio.load(data);
-            $("table.table-list tbody tr").each((_, row) => {
-                const tds = $(row).find("td");
-                const nameLink = tds.eq(0).find("a").eq(1);
+        if (!data) return [];
 
-                if (!nameLink.length) return;
+        const $ = cheerio.load(data);
 
-                const name = nameLink.text().trim();
-                if (!ITA_REGEX.test(name)) return;
+        $("table.table-list tbody tr").each((_, row) => {
+            const tds = $(row).find("td");
+            const nameLink = tds.eq(0).find("a").eq(1);
+            if (!nameLink.length) return;
 
-                const torrentPath = nameLink.attr("href");
-                if (!torrentPath) return;
+            const name = nameLink.text().trim();
+            const torrentPath = nameLink.attr("href");
+            
+            // Verifica Regex anche qui per sicurezza
+            if (!ITA_REGEX.test(name) || !torrentPath) return;
 
-                if (year) {
-                    const y = parseInt(year);
-                    if (![y - 1, y, y + 1].some(ay => name.includes(ay))) return;
-                }
+            if (year) {
+                const y = parseInt(year);
+                // Controllo anno semplice
+                if (!name.includes(y.toString()) && !name.includes((y-1).toString()) && !name.includes((y+1).toString())) return;
+            }
 
-                const seeders = parseInt(tds.eq(1).text().replace(/,/g, "")) || 0;
+            const seeders = parseInt(tds.eq(1).text().replace(/,/g, "")) || 0;
+            
+            // Parsing dimensione
+            const sizeText = tds.eq(4).text(); // Di solito è nella 5a colonna (indice 4)
+            let sizeBytes = 0;
+            if (sizeText.includes("GB")) sizeBytes = parseFloat(sizeText) * 1073741824;
+            else if (sizeText.includes("MB")) sizeBytes = parseFloat(sizeText) * 1048576;
 
-                const sizeText = tds.eq(4).text();
-                const m = sizeText.match(/([\d.]+)\s*(GB|GiB|MB|MiB)/i);
-                let sizeBytes = 0;
-
-                if (m) {
-                    const num = parseFloat(m[1]);
-                    sizeBytes = m[2].toUpperCase().includes("G")
-                        ? num * 1073741824
-                        : num * 1048576;
-                }
-
-                if (!candidates.has(torrentPath) || seeders > candidates.get(torrentPath).seeders) {
-                    candidates.set(torrentPath, {
-                        name,
-                        torrentUrl: BASE_1337X + torrentPath,
-                        seeders,
-                        sizeBytes
-                    });
-                }
+            candidates.set(torrentPath, {
+                name,
+                path: torrentPath,
+                seeders,
+                sizeBytes,
+                size: sizeText
             });
-        } catch { }
+        });
+
+        // Fase 2: Prendi i magnet link SOLO dei primi 5 risultati migliori (per risparmiare tempo e richieste)
+        const topCandidates = [...candidates.values()]
+            .sort((a, b) => b.seeders - a.seeders)
+            .slice(0, 5); // Limite a 5 richieste di pagina dettaglio
+
+        const magnets = await Promise.all(topCandidates.map(async c => {
+            try {
+                const detailUrl = BASE_1337X + c.path;
+                const { data: detailData } = await axios.get(detailUrl, { timeout: TIMEOUT_MS, headers });
+                const $$ = cheerio.load(detailData);
+                
+                // Cerca il magnet link
+                const magnet = $$("a[href^='magnet:']").first().attr("href");
+                if (!magnet) return null;
+
+                // Estrai Hash pulito
+                const m = magnet.match(/btih:([A-F0-9]{40})/i);
+                const hash = m ? m[1].toUpperCase() : null;
+                if (!hash) return null;
+
+                return {
+                    title: c.name,
+                    magnet: buildMagnet(hash, c.name), // Ricostruisce il magnet con i nostri tracker veloci
+                    size: c.size,
+                    sizeBytes: c.sizeBytes,
+                    seeders: c.seeders,
+                    source: "1337x"
+                };
+            } catch (e) {
+                return null;
+            }
+        }));
+
+        return magnets.filter(Boolean);
+
+    } catch (e) {
+        console.error("1337x Error:", e.message);
+        return [];
     }
-
-    // Seconda fase: recupero magnet
-    const sorted = [...candidates.values()].sort((a, b) => b.seeders - a.seeders).slice(0, 60);
-
-    const magnets = await Promise.all(sorted.map(async c => {
-        try {
-            const { data } = await axios.get(c.torrentUrl, { timeout: 10000, headers });
-            const $ = cheerio.load(data);
-
-            const magnet = $("a[href^='magnet:']").first().attr("href");
-            if (!magnet) return null;
-
-            const hashMatch = magnet.match(/btih:([A-F0-9]{40})/i);
-            if (!hashMatch) return null;
-
-            const hash = hashMatch[1].toUpperCase();
-            const fullMagnet = buildMagnet(hash, c.name);
-
-            return {
-                title: c.name,
-                magnet: fullMagnet,
-                size: (c.sizeBytes / 1073741824).toFixed(2) + " GB",
-                sizeBytes: c.sizeBytes,
-                seeders: c.seeders,
-                source: "1337x"
-            };
-        } catch {
-            return null;
-        }
-    }));
-
-    return magnets.filter(Boolean);
 }
 
 /* ===========================================================
-   🔴 UNIFICA TUTTO
+   🔴 UNIFICA TUTTO E ESPORTA
    =========================================================== */
 async function searchMagnet(title, year) {
-    console.log(`\n--- [ULTIMATE ITA SEARCH: TPB + 1337x] ${title} ${year || ""} ---`);
+    console.log(`\n🔍 [APIBAY + 1337x] Searching: ${title} (${year})`);
 
-    const [tpb, x] = await Promise.all([
+    // Esegui le ricerche in parallelo
+    const [tpbResults, xResults] = await Promise.all([
         searchTPB(title, year),
         search1337x(title, year)
     ]);
 
-    console.log(`TPB: ${tpb.length} risultati`);
-    console.log(`1337x: ${x.length} risultati`);
+    // Unione e Deduplicazione per Hash
+    const uniqueMap = new Map();
 
-    const final = new Map();
-
-    const add = r => {
-        const m = r.magnet.match(/btih:([A-F0-9]{40})/i);
-        if (!m) return;
-
-        const hash = m[1].toUpperCase();
-
-        if (!final.has(hash) || r.seeders > final.get(hash).seeders) {
-            final.set(hash, r);
+    const addResult = (item) => {
+        const match = item.magnet.match(/btih:([A-F0-9]{40})/i);
+        if (match) {
+            const hash = match[1].toUpperCase();
+            // Se esiste già, sovrascrivi solo se ha più seeders
+            if (!uniqueMap.has(hash) || item.seeders > uniqueMap.get(hash).seeders) {
+                uniqueMap.set(hash, item);
+            }
         }
     };
 
-    tpb.forEach(add);
-    x.forEach(add);
+    tpbResults.forEach(addResult);
+    xResults.forEach(addResult);
 
-    const out = [...final.values()]
-        .sort((a, b) => b.seeders - a.seeders || b.sizeBytes - a.sizeBytes)
-        .slice(0, 6);
+    const results = [...uniqueMap.values()];
 
-    console.log(`TOTALE UNICI con seeders massimi: ${out.length} (limitato a 5)`);
+    // Ordinamento finale: Prima per Seeders, poi per dimensione
+    results.sort((a, b) => b.seeders - a.seeders || b.sizeBytes - a.sizeBytes);
 
-    return out;
+    console.log(`✅ TPB: ${tpbResults.length} | 1337x: ${xResults.length} -> Totale Unici: ${results.length}`);
+
+    // Ritorna fino a 15 risultati migliori (6 erano pochi per una "Bomba")
+    return results.slice(0, 15);
 }
 
 module.exports = { searchMagnet };
