@@ -3,246 +3,328 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Corsaro Unleashed - Configurator</title>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&display=swap" rel="stylesheet">
+    <title>Corsaro - Configurazione</title>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap" rel="stylesheet">
     <style>
         :root {
-            --primary: #6366f1; /* Indigo */
-            --primary-hover: #4f46e5;
-            --bg-gradient: linear-gradient(135deg, #0f0c29, #302b63, #24243e);
-            --glass-bg: rgba(255, 255, 255, 0.05);
-            --glass-border: rgba(255, 255, 255, 0.1);
-            --text-main: #ffffff;
-            --text-muted: #94a3b8;
-            --success: #10b981;
-            --error: #ef4444;
+            --accent: #00f2ff; /* Cyan Cyberpunk */
+            --accent-glow: rgba(0, 242, 255, 0.4);
+            --secondary: #7000ff; /* Neon Purple */
+            --bg-dark: #050510;
+            --glass: rgba(15, 15, 25, 0.65);
+            --border: rgba(255, 255, 255, 0.08);
+            --text: #ffffff;
+            --text-muted: #8b9bb4;
+            --danger: #ff2a6d;
+            --success: #05ffa1;
         }
 
-        * { box-sizing: border-box; margin: 0; padding: 0; }
+        * { box-sizing: border-box; margin: 0; padding: 0; outline: none; }
 
         body {
-            font-family: 'Inter', sans-serif;
-            background: var(--bg-gradient);
-            color: var(--text-main);
+            font-family: 'Outfit', sans-serif;
+            background-color: var(--bg-dark);
+            color: var(--text);
             min-height: 100vh;
             display: flex;
             align-items: center;
             justify-content: center;
             padding: 20px;
             overflow-x: hidden;
+            position: relative;
         }
 
-        /* Background Blobs Animation */
-        .blob {
-            position: absolute;
-            width: 500px;
-            height: 500px;
-            filter: blur(80px);
-            opacity: 0.4;
+        /* CANVAS BACKGROUND */
+        #bg-canvas {
+            position: fixed;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
             z-index: -1;
-            animation: float 10s infinite alternate;
-        }
-        .blob-1 { top: -10%; left: -10%; background: purple; }
-        .blob-2 { bottom: -10%; right: -10%; background: blue; animation-delay: -5s; }
-
-        @keyframes float {
-            0% { transform: translate(0, 0) scale(1); }
-            100% { transform: translate(20px, 40px) scale(1.1); }
+            background: radial-gradient(circle at center, #1a1a2e 0%, #000000 100%);
         }
 
+        /* MAIN CONTAINER */
         .container {
             width: 100%;
-            max-width: 600px;
-            background: var(--glass-bg);
-            backdrop-filter: blur(16px);
-            -webkit-backdrop-filter: blur(16px);
-            border: 1px solid var(--glass-border);
+            max-width: 550px;
+            background: var(--glass);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border: 1px solid var(--border);
+            border-top: 1px solid rgba(255,255,255,0.2);
             border-radius: 24px;
             padding: 40px;
-            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
-            animation: slideUp 0.6s ease-out;
+            box-shadow: 0 0 40px rgba(0,0,0,0.6);
+            animation: fadeInUp 0.8s cubic-bezier(0.2, 0.8, 0.2, 1);
+            position: relative;
+            overflow: hidden;
         }
 
-        @keyframes slideUp {
-            from { opacity: 0; transform: translateY(40px); }
-            to { opacity: 1; transform: translateY(0); }
+        /* Subtle shine effect */
+        .container::before {
+            content: '';
+            position: absolute;
+            top: -50%; left: -50%;
+            width: 200%; height: 200%;
+            background: linear-gradient(45deg, transparent, rgba(255,255,255,0.03), transparent);
+            transform: rotate(45deg);
+            pointer-events: none;
         }
 
-        header { text-align: center; margin-bottom: 40px; }
-        h1 { font-size: 2.5rem; font-weight: 800; margin-bottom: 10px; background: linear-gradient(to right, #a78bfa, #6366f1); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-        p.subtitle { color: var(--text-muted); font-size: 1rem; }
+        @keyframes fadeInUp {
+            from { opacity: 0; transform: translateY(30px) scale(0.95); }
+            to { opacity: 1; transform: translateY(0) scale(1); }
+        }
 
-        /* SEZIONI */
-        .section-title {
-            font-size: 0.85rem;
+        /* HEADER */
+        header { text-align: center; margin-bottom: 35px; }
+        h1 { 
+            font-size: 2.8rem; 
+            font-weight: 800; 
+            letter-spacing: -1px;
+            background: linear-gradient(135deg, #fff 0%, var(--accent) 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            text-shadow: 0 0 20px var(--accent-glow);
+            margin-bottom: 5px;
+        }
+        .subtitle { color: var(--text-muted); font-size: 1rem; font-weight: 400; }
+        .badge {
+            display: inline-block;
+            background: rgba(0, 242, 255, 0.1);
+            color: var(--accent);
+            border: 1px solid var(--accent);
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 0.7rem;
+            font-weight: 800;
+            margin-bottom: 10px;
             text-transform: uppercase;
-            letter-spacing: 1.5px;
-            color: var(--text-muted);
-            margin-bottom: 15px;
-            margin-top: 30px;
-            font-weight: 700;
-            border-bottom: 1px solid var(--glass-border);
-            padding-bottom: 5px;
+            letter-spacing: 1px;
         }
 
-        /* INPUT FIELDS */
+        /* SECTIONS */
+        .section-label {
+            color: var(--accent);
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            font-weight: 800;
+            margin: 25px 0 15px 0;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .section-label::after {
+            content: ''; flex: 1; height: 1px;
+            background: linear-gradient(90deg, var(--accent) 0%, transparent 100%);
+            opacity: 0.3;
+        }
+
+        /* INPUTS */
         .input-group { margin-bottom: 20px; position: relative; }
-        .input-group label { display: block; font-size: 0.9rem; margin-bottom: 8px; font-weight: 500; }
+        .input-wrapper { position: relative; }
+        
         .input-field {
             width: 100%;
-            padding: 14px 16px;
-            background: rgba(0, 0, 0, 0.3);
-            border: 1px solid var(--glass-border);
+            padding: 16px 16px 16px 45px; /* Space for icon */
+            background: rgba(0,0,0,0.4);
+            border: 1px solid var(--border);
             border-radius: 12px;
             color: white;
             font-size: 1rem;
-            transition: all 0.3s;
+            font-family: 'Outfit', sans-serif;
+            transition: all 0.3s ease;
         }
-        .input-field:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.2); background: rgba(0, 0, 0, 0.5); }
-        .input-helper { font-size: 0.8rem; color: var(--text-muted); margin-top: 6px; text-align: right; }
-        .input-helper a { color: var(--primary); text-decoration: none; transition: color 0.2s; }
-        .input-helper a:hover { color: #a5b4fc; text-decoration: underline; }
-
-        /* TOGGLES & OPTIONS */
-        .options-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 15px;
+        
+        .input-icon {
+            position: absolute;
+            left: 16px; top: 50%;
+            transform: translateY(-50%);
+            font-size: 1.1rem;
+            filter: grayscale(100%);
+            transition: 0.3s;
+            opacity: 0.6;
         }
 
+        .input-field:focus {
+            border-color: var(--accent);
+            box-shadow: 0 0 15px var(--accent-glow);
+            background: rgba(0,0,0,0.6);
+        }
+        .input-field:focus + .input-icon {
+            filter: grayscale(0%);
+            opacity: 1;
+            transform: translateY(-50%) scale(1.1);
+        }
+
+        .input-helper {
+            font-size: 0.8rem; color: var(--text-muted); margin-top: 6px; text-align: right;
+            display: flex; justify-content: flex-end; gap: 5px;
+        }
+        .input-helper a { color: var(--accent); text-decoration: none; transition: 0.2s; border-bottom: 1px dotted var(--accent); }
+        .input-helper a:hover { color: #fff; border-color: #fff; }
+
+        /* OPTIONS GRID */
+        .options-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+        
         .option-card {
-            background: rgba(255,255,255,0.03);
-            border: 1px solid var(--glass-border);
-            padding: 15px;
+            background: rgba(255,255,255,0.02);
+            border: 1px solid var(--border);
+            padding: 12px 15px;
             border-radius: 12px;
             display: flex;
             justify-content: space-between;
             align-items: center;
-            transition: transform 0.2s;
+            transition: 0.3s;
+            cursor: pointer;
         }
-        .option-card:hover { background: rgba(255,255,255,0.07); }
-        .option-label { font-size: 0.9rem; font-weight: 500; }
-        
-        /* SWITCH CSS */
-        .switch { position: relative; display: inline-block; width: 44px; height: 24px; }
+        .option-card:hover {
+            background: rgba(255,255,255,0.05);
+            border-color: rgba(255,255,255,0.2);
+            transform: translateY(-2px);
+        }
+        .option-label { font-size: 0.85rem; font-weight: 500; color: #e0e0e0; }
+
+        /* NEON SWITCH */
+        .switch { position: relative; display: inline-block; width: 40px; height: 22px; }
         .switch input { opacity: 0; width: 0; height: 0; }
         .slider {
             position: absolute; cursor: pointer;
             top: 0; left: 0; right: 0; bottom: 0;
-            background-color: #333; transition: .4s; border-radius: 34px;
+            background-color: #2a2a35; transition: .4s; border-radius: 34px;
+            border: 1px solid #444;
         }
         .slider:before {
             position: absolute; content: "";
-            height: 18px; width: 18px;
+            height: 14px; width: 14px;
             left: 3px; bottom: 3px;
-            background-color: white; transition: .4s; border-radius: 50%;
+            background-color: #888; transition: .4s; border-radius: 50%;
         }
-        input:checked + .slider { background-color: var(--primary); }
-        input:checked + .slider:before { transform: translateX(20px); }
+        input:checked + .slider { background-color: rgba(0, 242, 255, 0.15); border-color: var(--accent); }
+        input:checked + .slider:before { transform: translateX(18px); background-color: var(--accent); box-shadow: 0 0 10px var(--accent); }
 
         /* BUTTONS */
         .actions { display: flex; flex-direction: column; gap: 15px; margin-top: 40px; }
+        
         .btn {
+            position: relative;
             width: 100%;
-            padding: 16px;
+            padding: 18px;
             border-radius: 14px;
             font-size: 1.1rem;
             font-weight: 700;
             cursor: pointer;
             border: none;
-            transition: all 0.3s ease;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            gap: 10px;
+            overflow: hidden;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            transition: 0.3s;
+            font-family: 'Outfit', sans-serif;
+            z-index: 1;
         }
-        
+
         .btn-primary {
-            background: var(--primary);
-            color: white;
-            box-shadow: 0 4px 15px rgba(99, 102, 241, 0.4);
+            background: var(--accent);
+            color: #000;
+            box-shadow: 0 0 20px var(--accent-glow);
         }
-        .btn-primary:hover { transform: translateY(-2px); background: var(--primary-hover); box-shadow: 0 8px 25px rgba(99, 102, 241, 0.6); }
+        .btn-primary::before {
+            content: ''; position: absolute;
+            top: 0; left: -100%; width: 100%; height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.4), transparent);
+            transition: 0.5s; z-index: -1;
+        }
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 0 40px var(--accent-glow);
+        }
+        .btn-primary:hover::before { left: 100%; }
 
         .btn-secondary {
             background: transparent;
-            border: 1px solid var(--glass-border);
+            border: 1px solid var(--border);
             color: var(--text-muted);
         }
-        .btn-secondary:hover { border-color: white; color: white; background: rgba(255,255,255,0.05); }
+        .btn-secondary:hover {
+            border-color: var(--text);
+            color: var(--text);
+            background: rgba(255,255,255,0.03);
+        }
 
-        /* Toast Notification */
+        /* TOAST */
         #toast {
             visibility: hidden;
-            min-width: 250px;
-            background-color: #333;
+            min-width: 280px;
+            background: rgba(15, 15, 20, 0.95);
+            backdrop-filter: blur(10px);
             color: #fff;
             text-align: center;
-            border-radius: 8px;
+            border-radius: 12px;
             padding: 16px;
             position: fixed;
-            z-index: 1;
+            z-index: 100;
             bottom: 30px;
             left: 50%;
-            transform: translateX(-50%);
-            font-size: 1rem;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+            transform: translateX(-50%) translateY(20px);
+            border: 1px solid var(--border);
             opacity: 0;
-            transition: opacity 0.3s, bottom 0.3s;
+            transition: 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+            font-weight: 500;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
         }
-        #toast.show { visibility: visible; opacity: 1; bottom: 50px; }
-        #toast.success { background-color: var(--success); }
-        #toast.error { background-color: var(--error); }
+        #toast.show { visibility: visible; opacity: 1; transform: translateX(-50%) translateY(0); }
+        #toast.success { border-color: var(--success); color: var(--success); }
+        #toast.error { border-color: var(--danger); color: var(--danger); }
 
+        /* RESPONSIVE */
         @media (max-width: 480px) {
-            .container { padding: 25px; }
+            .container { padding: 25px; border: none; border-radius: 0; background: transparent; box-shadow: none; }
             .options-grid { grid-template-columns: 1fr; }
-            h1 { font-size: 2rem; }
+            h1 { font-size: 2.2rem; }
         }
     </style>
 </head>
 <body>
 
-    <div class="blob blob-1"></div>
-    <div class="blob blob-2"></div>
+    <canvas id="bg-canvas"></canvas>
 
     <div class="container">
         <header>
-            <h1>Corsaro Unleashed</h1>
-            <p class="subtitle">La configurazione definitiva per Stremio.<br>Potenza italiana, database globale.</p>
+            <span class="badge">v23.4.4</span>
+            <h1>CORSARO</h1>
+            <p class="subtitle">Alias Hunter & Stream Engine</p>
         </header>
 
-        <div class="section-title">1. Credenziali (TMDB Obbligatoria, Almeno un Debrid)</div>
+        <div class="section-label">🔑 Accesso API</div>
         
         <div class="input-group">
-            <label>TheMovieDB API Key</label>
-            <input type="text" id="tmdb" class="input-field" placeholder="Es. a1b2c3d4...">
-            <div class="input-helper">Necessaria per i metadati. <a href="https://www.themoviedb.org/settings/api" target="_blank">Ottieni Key</a></div>
+            <div class="input-wrapper">
+                <input type="text" id="tmdb" class="input-field" placeholder="TheMovieDB API Key">
+                <span class="input-icon">🎬</span>
+            </div>
+            <div class="input-helper"><a href="https://www.themoviedb.org/settings/api" target="_blank">Ottieni Key</a></div>
         </div>
 
         <div class="input-group">
-            <label>Real-Debrid Token</label>
-            <input type="text" id="rd" class="input-field" placeholder="Es. F4K3TOKEN...">
-            <div class="input-helper">Token principale per lo streaming. <a href="https://real-debrid.com/apitoken" target="_blank">Ottieni Token</a></div>
+            <div class="input-wrapper">
+                <input type="text" id="rd" class="input-field" placeholder="Real-Debrid Token">
+                <span class="input-icon">⚡</span>
+            </div>
+            <div class="input-helper"><a href="https://real-debrid.com/apitoken" target="_blank">Ottieni Token</a></div>
         </div>
         
         <div class="input-group">
-            <label>Torbox Token (Opzionale)</label>
-            <input type="text" id="torbox" class="input-field" placeholder="Es. T0K3NT0RB0X...">
-            <div class="input-helper">Alternativa a Real-Debrid.</div>
+            <div class="input-wrapper">
+                <input type="text" id="torbox" class="input-field" placeholder="Torbox Token (Opzionale)">
+                <span class="input-icon">🌐</span>
+            </div>
         </div>
 
-        <div class="input-group">
-            <label>AllDebrid API Key (Opzionale)</label>
-            <input type="text" id="alldebrid" class="input-field" placeholder="Es. A1B2C3D4...">
-            <div class="input-helper">Alternativa a Real-Debrid. <a href="https://alldebrid.com/apikeys" target="_blank">Ottieni Key</a></div>
-        </div>
-
-
-        <div class="section-title">2. Personalizzazione</div>
+        <div class="section-label">⚙️ Filtri & Opzioni</div>
         
         <div class="options-grid">
-            <div class="option-card">
+            <div class="option-card" onclick="toggleSwitch('priorityTorbox')">
                 <span class="option-label">Priorità Torbox</span>
                 <label class="switch">
                     <input type="checkbox" id="priorityTorbox">
@@ -250,15 +332,7 @@
                 </label>
             </div>
             
-            <div class="option-card">
-                <span class="option-label">Priorità AllDebrid</span>
-                <label class="switch">
-                    <input type="checkbox" id="priorityAllDebrid">
-                    <span class="slider"></span>
-                </label>
-            </div>
-
-            <div class="option-card">
+            <div class="option-card" onclick="toggleSwitch('onlyIta')">
                 <span class="option-label">Solo Fonti ITA</span>
                 <label class="switch">
                     <input type="checkbox" id="onlyIta">
@@ -266,7 +340,7 @@
                 </label>
             </div>
 
-            <div class="option-card">
+            <div class="option-card" onclick="toggleSwitch('no4k')">
                 <span class="option-label">Rimuovi 4K</span>
                 <label class="switch">
                     <input type="checkbox" id="no4k">
@@ -274,18 +348,10 @@
                 </label>
             </div>
 
-            <div class="option-card">
-                <span class="option-label">Rimuovi CAM/Screener</span>
+            <div class="option-card" onclick="toggleSwitch('showFake')">
+                <span class="option-label">Mostra Uncached 📥</span>
                 <label class="switch">
-                    <input type="checkbox" id="noCam" checked>
-                    <span class="slider"></span>
-                </label>
-            </div>
-
-             <div class="option-card">
-                <span class="option-label">Mostra File Fake/Link</span>
-                <label class="switch">
-                    <input type="checkbox" id="showFake">
+                    <input type="checkbox" id="showFake" checked>
                     <span class="slider"></span>
                 </label>
             </div>
@@ -293,10 +359,10 @@
 
         <div class="actions">
             <button class="btn btn-primary" onclick="installAddon()">
-                <span>🚀 INSTALLA SU STREMIO</span>
+                Installa Addon
             </button>
             <button class="btn btn-secondary" onclick="copyLink()">
-                <span>📋 Copia Link Configurazione</span>
+                Copia Link
             </button>
         </div>
     </div>
@@ -304,54 +370,107 @@
     <div id="toast">Messaggio</div>
 
     <script>
-        // UX: Impedisci selezione multipla delle priorità
-        document.getElementById('priorityTorbox').addEventListener('change', function() {
-            if(this.checked) document.getElementById('priorityAllDebrid').checked = false;
-        });
-        document.getElementById('priorityAllDebrid').addEventListener('change', function() {
-            if(this.checked) document.getElementById('priorityTorbox').checked = false;
-        });
+        // --- BACKGROUND ANIMATION (Starfield Network) ---
+        const canvas = document.getElementById('bg-canvas');
+        const ctx = canvas.getContext('2d');
+        let particles = [];
+
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        }
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        class Particle {
+            constructor() {
+                this.x = Math.random() * canvas.width;
+                this.y = Math.random() * canvas.height;
+                this.vx = (Math.random() - 0.5) * 0.5;
+                this.vy = (Math.random() - 0.5) * 0.5;
+                this.size = Math.random() * 2;
+            }
+            update() {
+                this.x += this.vx;
+                this.y += this.vy;
+                if (this.x < 0 || this.x > canvas.width) this.vx *= -1;
+                if (this.y < 0 || this.y > canvas.height) this.vy *= -1;
+            }
+            draw() {
+                ctx.fillStyle = 'rgba(0, 242, 255, 0.5)';
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        function initParticles() {
+            const count = window.innerWidth < 768 ? 50 : 100; // Less particles on mobile
+            for (let i = 0; i < count; i++) particles.push(new Particle());
+        }
+
+        function animate() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            for (let i = 0; i < particles.length; i++) {
+                particles[i].update();
+                particles[i].draw();
+                // Connect particles
+                for (let j = i; j < particles.length; j++) {
+                    const dx = particles[i].x - particles[j].x;
+                    const dy = particles[i].y - particles[j].y;
+                    const distance = Math.sqrt(dx * dx + dy * dy);
+                    if (distance < 120) {
+                        ctx.beginPath();
+                        ctx.strokeStyle = `rgba(0, 242, 255, ${0.1 - distance/1200})`;
+                        ctx.lineWidth = 0.5;
+                        ctx.moveTo(particles[i].x, particles[i].y);
+                        ctx.lineTo(particles[j].x, particles[j].y);
+                        ctx.stroke();
+                    }
+                }
+            }
+            requestAnimationFrame(animate);
+        }
+        initParticles();
+        animate();
+
+        // --- LOGIC ---
+        function toggleSwitch(id) {
+            // Piccolo helper per cliccare sulla card e attivare lo switch
+            // (evitiamo il doppio evento se clicchiamo direttamente la checkbox)
+            const checkbox = document.getElementById(id);
+            if (event.target !== checkbox && event.target !== checkbox.nextElementSibling) {
+                checkbox.checked = !checkbox.checked;
+            }
+        }
 
         function getConfig() {
             const tmdb = document.getElementById('tmdb').value.trim();
             const rd = document.getElementById('rd').value.trim();
             const torbox = document.getElementById('torbox').value.trim();
-            const alldebrid = document.getElementById('alldebrid').value.trim();
             
             const onlyIta = document.getElementById('onlyIta').checked;
             const no4k = document.getElementById('no4k').checked;
-            const noCam = document.getElementById('noCam').checked;
             const showFake = document.getElementById('showFake').checked;
-            
             const priorityTorbox = document.getElementById('priorityTorbox').checked; 
-            const priorityAllDebrid = document.getElementById('priorityAllDebrid').checked; 
 
-            if (!tmdb || (!rd && !torbox && !alldebrid)) {
-                showToast("⚠️ Inserisci API Key TMDB e almeno un Token Debrid!", "error");
+            if (!tmdb || (!rd && !torbox)) {
+                showToast("⚠️ API Key TMDB e almeno un Token Debrid necessari!", "error");
                 return null;
             }
 
             return {
-                tmdb,
-                rd,
-                torbox,
-                alldebrid,
-                filters: { onlyIta, no4k, noCam, showFake },
-                settings: {
-                    priorityTorbox, 
-                    priorityAllDebrid 
-                }
+                tmdb, rd, torbox,
+                filters: { onlyIta, no4k, showFake },
+                settings: { priorityTorbox }
             };
         }
 
         function getStremioUrl() {
             const config = getConfig();
             if (!config) return null;
-
             const configStr = btoa(JSON.stringify(config));
             const host = window.location.host;
-            
-            // FIX: Rimosso il doppio protocollo. Stremio vuole stremio://dominio/path
             return `stremio://${host}/${configStr}/manifest.json`;
         }
 
@@ -363,43 +482,26 @@
         function copyLink() {
             const config = getConfig();
             if (!config) return;
-
             const configStr = btoa(JSON.stringify(config));
             const host = window.location.host;
-            const protocol = window.location.protocol; // Qui serve il protocollo HTTP/HTTPS per la copia
-
+            const protocol = window.location.protocol;
             const url = `${protocol}//${host}/${configStr}/manifest.json`;
             
             if (navigator.clipboard && navigator.clipboard.writeText) {
-                navigator.clipboard.writeText(url).then(() => {
-                    showToast("✅ Link copiato!", "success");
-                }).catch(() => {
-                    fallbackCopy(url);
-                });
+                navigator.clipboard.writeText(url).then(() => showToast("✅ Copiato!", "success"));
             } else {
-                fallbackCopy(url);
+                const ta = document.createElement("textarea");
+                ta.value = url; document.body.appendChild(ta); ta.select();
+                document.execCommand('copy'); document.body.removeChild(ta);
+                showToast("✅ Copiato!", "success");
             }
-        }
-
-        function fallbackCopy(text) {
-            const textArea = document.createElement("textarea");
-            textArea.value = text;
-            document.body.appendChild(textArea);
-            textArea.select();
-            try {
-                document.execCommand('copy');
-                showToast("✅ Link copiato!", "success");
-            } catch (err) {
-                showToast("❌ Errore copia", "error");
-            }
-            document.body.removeChild(textArea);
         }
 
         function showToast(msg, type) {
             const t = document.getElementById("toast");
             t.innerText = msg;
             t.className = "show " + type;
-            setTimeout(() => { t.className = t.className.replace("show", ""); }, 4000);
+            setTimeout(() => t.className = "", 4000);
         }
     </script>
 </body>
