@@ -12,36 +12,12 @@ const DebridX = require("./debridx"); // Torbox
 const TorrentMagnet = require("./torrentmagnet"); // Il tuo motore Core
 const External = require("./external"); // Il "Black Box"
 
-// --- ANTI-BLOCKING & USER AGENTS ---
-const USER_AGENTS = [
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 13_6_1) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15',
-    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
-    'Stremio/4.52.0 (Linux; x86_64)',
-    'Stremio/4.48.0 (Windows NT 10.0; Win64; x64)',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/118.0'
-];
-
-function getRandomUA() {
-    return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
-}
-
 // --- CONFIGURAZIONE NETWORK ---
 const axiosInstance = axios.create({
-    timeout: 14000,
-    httpAgent: new http.Agent({ keepAlive: true, maxSockets: 50 }),
-    httpsAgent: new https.Agent({ keepAlive: true, maxSockets: 50 }),
-    headers: { 
-        'Accept': 'application/json',
-        'Accept-Encoding': 'gzip, deflate',
-        'Connection': 'keep-alive'
-    }
-});
-
-// Rotate User-Agent on every request
-axiosInstance.interceptors.request.use(config => {
-    config.headers['User-Agent'] = getRandomUA();
-    return config;
+    timeout: 15000, 
+    httpAgent: new http.Agent({ keepAlive: true }),
+    httpsAgent: new https.Agent({ keepAlive: true }),
+    headers: { 'User-Agent': 'Corsaro-Alias-Hunter/23.5.0' }
 });
 
 // --- CONFIGURAZIONE CACHE ---
@@ -58,9 +34,9 @@ app.use(express.static(path.join(__dirname, 'public')));
 // --- MANIFEST ---
 const manifestBase = {
     id: "org.community.corsaro-stealth",
-    version: "23.5.5", // Bump versione
+    version: "23.5.4", // Bump versione
     name: "Corsaro + Global (Stealth Edition)",
-    description: "🇮🇹 V23.5.5: Anti-Blocking, Randomized UA & Jitter Rate Limiting.",
+    description: "🇮🇹 V23.5.4: Fix Serie TV (Ricerca Semplificata/Robusta) + Priorità Esterna.",
     resources: ["catalog", "stream"],
     types: ["movie", "series"],
     catalogs: [{ type: "movie", id: "tmdb_trending", name: "Popolari Italia" }],
@@ -89,34 +65,6 @@ function getConfig(configStr) {
             filters: config.filters || {}
         };
     } catch (e) { return {}; }
-}
-
-// --- INTELLIGENT RATE LIMITING ---
-const rateLimiter = new Map();
-
-async function rateLimitedRequest(key, fn, maxPerMinute = 15) {
-    const now = Date.now();
-    const minute = Math.floor(now / 60000);
-    const bucket = rateLimiter.get(key) || { minute: minute, count: 0 };
-
-    if (bucket.minute !== minute) {
-        bucket.minute = minute;
-        bucket.count = 0;
-    }
-
-    if (bucket.count >= maxPerMinute) {
-        // Jitter: random delay between 0 and 3 seconds
-        const delay = 60000 - (now % 60000) + Math.random() * 3000;
-        console.log(`⏳ Rate Limit hit for ${key}. Waiting ${Math.round(delay)}ms`);
-        await wait(delay);
-        // Reset count after wait for safety
-        bucket.count = 0;
-        bucket.minute = Math.floor((Date.now()) / 60000);
-    }
-
-    bucket.count++;
-    rateLimiter.set(key, bucket);
-    return fn();
 }
 
 // --- SMART MATCHING ---
@@ -193,14 +141,9 @@ async function getMetadata(id, type, tmdbKey) {
             episodeNum = parseInt(parts[2]);
         }
         
-        // Risoluzione IMDb ID -> TMDB ID con Rate Limiting
+        // Risoluzione IMDb ID -> TMDB ID
         if (tmdbId.startsWith('tt')) {
-            const findUrl = `https://api.themoviedb.org/3/find/${tmdbId}?api_key=${tmdbKey}&language=it-IT&external_source=imdb_id`;
-            
-            const res = await rateLimitedRequest(`tmdb_find_${tmdbKey}`, () => 
-                axiosInstance.get(findUrl)
-            );
-            
+            const res = await axiosInstance.get(`https://api.themoviedb.org/3/find/${tmdbId}?api_key=${tmdbKey}&language=it-IT&external_source=imdb_id`);
             if (type === 'movie' && res.data.movie_results?.[0]) tmdbId = res.data.movie_results[0].id;
             else if (type === 'series' && res.data.tv_results?.[0]) tmdbId = res.data.tv_results[0].id;
         } else if (tmdbId.startsWith('tmdb:')) {
@@ -208,13 +151,7 @@ async function getMetadata(id, type, tmdbKey) {
         }
 
         const append = "alternative_titles,external_ids";
-        const detailsUrl = `https://api.themoviedb.org/3/${type === 'movie' ? 'movie' : 'tv'}/${tmdbId}?api_key=${tmdbKey}&language=it-IT&append_to_response=${append}`;
-        
-        // Richiesta dettagli con Rate Limiting
-        const res = await rateLimitedRequest(`tmdb_details_${tmdbKey}`, () => 
-            axiosInstance.get(detailsUrl)
-        );
-        
+        const res = await axiosInstance.get(`https://api.themoviedb.org/3/${type === 'movie' ? 'movie' : 'tv'}/${tmdbId}?api_key=${tmdbKey}&language=it-IT&append_to_response=${append}`);
         const details = res.data;
 
         if (details) {
@@ -501,4 +438,4 @@ app.get('/:userConf/stream/:type/:id.json', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 7000;
-app.listen(PORT, () => console.log(`Addon v23.5.5 (Stealth) attivo su porta ${PORT}!`));
+app.listen(PORT, () => console.log(`Addon v23.5.4 (Series Robust) attivo su porta ${PORT}!`));
