@@ -341,7 +341,7 @@ async function searchMagnet(title, year) {
 
     console.log(`\n🔍 Search: "${cleanTitle}"`);
 
-    
+    // Usiamo Promise.allSettled per far girare TUTTO in parallelo senza bloccare se uno fallisce
     const promises = [
         searchCorsaro(corsaroQueryFinal),        
         search1337x(cleanTitle, year),  
@@ -357,10 +357,12 @@ async function searchMagnet(title, year) {
         if (res.status === 'fulfilled') allResults.push(...res.value);
     });
 
-    // --- Deduplicazione ---
+    // --- Deduplicazione (MODALITÀ "MOSTRA TUTTO") ---
+    // Non cancelliamo i risultati se l'hash è lo stesso ma la fonte è diversa.
+    // In questo modo Knaben non viene nascosto da UIndex o 1337x.
     const uniqueMap = new Map();
     allResults.forEach(item => {
-        // Doppio controllo ITA 
+        // Doppio controllo ITA (tranne per Corsaro/UIndex che sono già ITA)
         const isItaSource = item.source === 'CorsaroNero' || item.source === 'UIndex';
         if (!isItaSource && !ITA_REGEX.test(item.title)) return;
 
@@ -370,15 +372,16 @@ async function searchMagnet(title, year) {
         item.infoHash = hash; 
         item.magnetLink = item.magnet; 
 
-        if (!uniqueMap.has(hash)) {
-            uniqueMap.set(hash, item);
+        // CHIAVE UNICA BASATA SU HASH + SORGENTE
+        const uniqueKey = `${hash}_${item.source}`;
+
+        if (!uniqueMap.has(uniqueKey)) {
+            uniqueMap.set(uniqueKey, item);
         } else {
-            const existing = uniqueMap.get(hash);
-            // Corsaro vince sempre per priorità
-            if (item.source === 'CorsaroNero' || (item.source === 'UIndex' && existing.source !== 'CorsaroNero')) {
-                uniqueMap.set(hash, item);
-            } else if (item.seeders > existing.seeders && existing.source !== 'CorsaroNero') {
-                uniqueMap.set(hash, item);
+            // Se la STESSA sorgente ha duplicati (es. 2 volte Knaben), tieni il migliore
+            const existing = uniqueMap.get(uniqueKey);
+            if (item.seeders > existing.seeders) {
+                uniqueMap.set(uniqueKey, item);
             }
         }
     });
