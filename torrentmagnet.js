@@ -137,7 +137,9 @@ async function search1337x(title, year) {
     const headers = { "User-Agent": USER_AGENT };
 
     try {
-        const url = `${BASE_1337X}/category-search/${encodeURIComponent(query)}/Movies/1/`;
+        // FIX: Se year è null (Serie TV), usa la categoria 'TV', altrimenti 'Movies'
+        const categoryPath = year ? 'Movies' : 'TV'; 
+        const url = `${BASE_1337X}/category-search/${encodeURIComponent(query)}/${categoryPath}/1/`;
         // console.log(`🚀 1337x Request: ${url}`); // Debug
 
         const { data } = await axios.get(url, { timeout: TIMEOUT_MS, headers }).catch(() => ({ data: "" }));
@@ -156,7 +158,7 @@ async function search1337x(title, year) {
             const torrentPath = nameLink.attr("href");
             if (!torrentPath) return;
 
-            // Filtro Anno
+            // Filtro Anno (solo per i film)
             if (year) {
                 const y = parseInt(year);
                 if (!name.includes(y.toString()) && !name.includes((y-1).toString()) && !name.includes((y+1).toString())) return;
@@ -216,10 +218,13 @@ async function searchAPIBay(title, year) {
         const cleanTitle = cleanString(title);
         const query = `${cleanTitle} ITA`; // Cerchiamo direttamente ITA per efficienza
         
+        // FIX: Se year è null (Serie TV), usa la categoria 205 (TV Shows), altrimenti 200 (Movies)
+        const categoryId = year ? 200 : 205; 
+        
         // console.log(`🌊 APIBay Request: ${query}`); // Debug
 
         const { data } = await axios.get(APIBAY_URL, {
-            params: { q: query, cat: 200 },
+            params: { q: query, cat: categoryId },
             timeout: TIMEOUT_MS
         });
 
@@ -338,8 +343,8 @@ async function searchMagnet(title, year) {
 
     const promises = [
         searchCorsaro(cleanTitle),          // Il migliore per ITA
-        search1337x(cleanTitle, year),      // Logica del tuo file
-        searchAPIBay(cleanTitle, year),     // Logica del tuo file
+        search1337x(cleanTitle, year),      // Logica del tuo file (FIX Categoria)
+        searchAPIBay(cleanTitle, year),     // Logica del tuo file (FIX Categoria)
         searchKnaben(cleanTitle),           // Backup
         searchUIndex(queryIta)              // Backup
     ];
