@@ -27,8 +27,6 @@ const TRACKERS = [
     "udp://tracker.tiny-vps.com:6969/announce"
 ];
 
-// Rimosso: const httpsAgent = new https.Agent({ rejectUnauthorized: false });
-
 // Regex ITA Potenziata
 const ITA_REGEX = /\b(ITA|ITALIAN|ITALIANO|MULTI|DUAL|MD|SUB[\s._-]?ITA|FORCED|AC3[\s._-]?ITA|DTS[\s._-]?ITA|CINEFILE|NOVARIP|MEM|ROBBYRS|IDN_CREW|PSO|BADASS)\b/i;
 
@@ -81,6 +79,7 @@ function buildMagnet(infoHash, name) {
    =========================================================== */
 async function searchCorsaro(query) {
     try {
+        // Corsaro non ama le query troppo lunghe o complesse
         const searchUrl = `${CORSARO_BASE_URL}/search?q=${encodeURIComponent(query)}`;
         const { data } = await axios.get(searchUrl, {
             timeout: TIMEOUT_MS,
@@ -127,20 +126,17 @@ async function searchCorsaro(query) {
 }
 
 /* ===========================================================
-   🚀 2. 1337x (Logica dal tuo file funzionante)
+   🚀 2. 1337x
    =========================================================== */
 async function search1337x(title, year) {
     const cleanTitle = cleanString(title);
-    // Usiamo la query specifica per filtrare subito
     const query = `${cleanTitle} ITA`; 
     const candidates = new Map();
     const headers = { "User-Agent": USER_AGENT };
 
     try {
-        // FIX: Se year è null (Serie TV), usa la categoria 'TV', altrimenti 'Movies'
         const categoryPath = year ? 'Movies' : 'TV'; 
         const url = `${BASE_1337X}/category-search/${encodeURIComponent(query)}/${categoryPath}/1/`;
-        // console.log(`🚀 1337x Request: ${url}`); // Debug
 
         const { data } = await axios.get(url, { timeout: TIMEOUT_MS, headers }).catch(() => ({ data: "" }));
         if (!data) return [];
@@ -153,12 +149,11 @@ async function search1337x(title, year) {
             if (!nameLink.length) return;
 
             const name = nameLink.text().trim();
-            if (!ITA_REGEX.test(name)) return; // Doppio controllo
+            if (!ITA_REGEX.test(name)) return;
 
             const torrentPath = nameLink.attr("href");
             if (!torrentPath) return;
 
-            // Filtro Anno (solo per i film)
             if (year) {
                 const y = parseInt(year);
                 if (!name.includes(y.toString()) && !name.includes((y-1).toString()) && !name.includes((y+1).toString())) return;
@@ -167,7 +162,6 @@ async function search1337x(title, year) {
             const seeders = parseInt(tds.eq(1).text().replace(/,/g, "")) || 0;
             const sizeText = tds.eq(4).text();
             
-            // Parsing rapido dimensione
             let sizeBytes = 0;
             if (sizeText.includes("GB")) sizeBytes = parseFloat(sizeText) * 1073741824;
             else if (sizeText.includes("MB")) sizeBytes = parseFloat(sizeText) * 1048576;
@@ -175,7 +169,6 @@ async function search1337x(title, year) {
             candidates.set(torrentPath, { name, path: torrentPath, seeders, sizeBytes, size: sizeText });
         });
 
-        // Prendi SOLO i top 5 per magnet link (evita blocchi eccessivi)
         const topCandidates = [...candidates.values()].sort((a, b) => b.seeders - a.seeders).slice(0, 5);
 
         const magnets = await Promise.all(topCandidates.map(async c => {
@@ -211,18 +204,14 @@ async function search1337x(title, year) {
 }
 
 /* ===========================================================
-   🌊 3. APIBAY / TPB (Logica dal tuo file)
+   🌊 3. APIBAY / TPB
    =========================================================== */
 async function searchAPIBay(title, year) {
     try {
         const cleanTitle = cleanString(title);
-        const query = `${cleanTitle} ITA`; // Cerchiamo direttamente ITA per efficienza
-        
-        // FIX: Se year è null (Serie TV), usa la categoria 205 (TV Shows), altrimenti 200 (Movies)
+        const query = `${cleanTitle} ITA`;
         const categoryId = year ? 200 : 205; 
         
-        // console.log(`🌊 APIBay Request: ${query}`); // Debug
-
         const { data } = await axios.get(APIBAY_URL, {
             params: { q: query, cat: categoryId },
             timeout: TIMEOUT_MS
@@ -257,7 +246,7 @@ async function searchAPIBay(title, year) {
 }
 
 /* ===========================================================
-   🦉 4. KNABEN (Backup solido)
+   🦉 4. KNABEN
    =========================================================== */
 async function searchKnaben(query) {
     try {
@@ -266,7 +255,6 @@ async function searchKnaben(query) {
         
         const { data } = await axios.get(url, {
             timeout: TIMEOUT_MS,
-            // Rimosso: httpsAgent: httpsAgent,
             headers: { 'User-Agent': USER_AGENT }
         });
 
@@ -278,7 +266,7 @@ async function searchKnaben(query) {
             if (cells.length < 5) return;
 
             const title = $(cells[1]).find('a').first().text().trim();
-            if (!ITA_REGEX.test(title)) return; // Filtro ITA
+            if (!ITA_REGEX.test(title)) return;
 
             const magnet = $(cells[1]).find('a[href^="magnet:"]').attr('href');
             const sizeStr = $(cells[2]).text().trim();
@@ -299,7 +287,7 @@ async function searchKnaben(query) {
 }
 
 /* ===========================================================
-   📊 5. UINDEX (Raw Magnet)
+   📊 5. UINDEX
    =========================================================== */
 async function searchUIndex(query) {
     try {
@@ -339,14 +327,30 @@ async function searchMagnet(title, year) {
     const queryIta = `${cleanTitle} ITA`;
     
     console.log(`\n🔍 [ALL-IN-ONE SEARCH] "${cleanTitle}" (${year})`);
+    
+    // --- FIX CORSARO SERIES LOGIC ---
+    // Corsaro non trova "S01E01", ma trova "Stagione 1".
+    // Creiamo una query specifica solo per Corsaro se è una serie TV.
+    let corsaroQuery = cleanTitle;
+    const seriesMatch = cleanTitle.match(/(.+?)\s+S(\d{1,2})/i); // Cattura "Titolo Sxx"
+
+    if (seriesMatch) {
+        // Trasforma "Gomorra S01E01" in "Gomorra Stagione 1"
+        const cleanName = seriesMatch[1].trim();
+        const seasonNum = parseInt(seriesMatch[2]);
+        corsaroQuery = `${cleanName} Stagione ${seasonNum}`;
+        console.log(`🇮🇹 Corsaro Optimized Query: "${corsaroQuery}"`);
+    }
+    // -------------------------------
+
     console.log(`📡 Sources: Corsaro, 1337x, APIBay, Knaben, UIndex`);
 
     const promises = [
-        searchCorsaro(cleanTitle),          // Il migliore per ITA
-        search1337x(cleanTitle, year),      // Logica del tuo file (FIX Categoria)
-        searchAPIBay(cleanTitle, year),     // Logica del tuo file (FIX Categoria)
-        searchKnaben(cleanTitle),           // Backup
-        searchUIndex(queryIta)              // Backup
+        searchCorsaro(corsaroQuery),        // <--- Query modificata (Stagione X)
+        search1337x(cleanTitle, year),      // Query standard (SxxExx)
+        searchAPIBay(cleanTitle, year),     // Query standard (SxxExx)
+        searchKnaben(cleanTitle),           // Query standard
+        searchUIndex(queryIta)              // Query standard
     ];
 
     const resultsArray = await Promise.allSettled(promises);
@@ -407,7 +411,7 @@ async function searchMagnet(title, year) {
     }, {});
     console.log(`📊 Distribuzione Fonti: ${JSON.stringify(sources)}`);
 
-    return uniqueResults.slice(0, 40); // Restituisci i primi 40
+    return uniqueResults.slice(0, 40); 
 }
 
 module.exports = { searchMagnet };
