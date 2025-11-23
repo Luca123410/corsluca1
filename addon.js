@@ -369,7 +369,7 @@ async function generateStream(type, id, config, userConfStr) {
                     behaviorHints: { notWebReady: true, bingeGroup: "uncached" }
                 });
             }
-            await wait(2); 
+            // Rimosso: await wait(2); 
         }
 
         const finalResponse = streams.length === 0 
