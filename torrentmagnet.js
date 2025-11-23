@@ -3,8 +3,8 @@ const cheerio = require("cheerio");
 const https = require("https");
 
 // --- CONFIGURAZIONE ---
-const TIMEOUT_MS = 10000; // Timeout bilanciato
-const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36";
+const TIMEOUT_MS = 15000; 
+const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36";
 
 // --- URL BASE ---
 const CORSARO_BASE_URL = "https://ilcorsaronero.link";
@@ -13,7 +13,7 @@ const UINDEX_BASE_URL = "https://uindex.org";
 const APIBAY_URL = "https://apibay.org/q.php";
 const BASE_1337X = "https://1337x.to"; 
 
-// --- TRACKERS AGGIORNATI ---
+// --- TRACKERS ---
 const TRACKERS = [
     "udp://tracker.opentrackr.org:1337/announce",
     "udp://open.tracker.cl:1337/announce",
@@ -27,7 +27,7 @@ const TRACKERS = [
     "udp://tracker.tiny-vps.com:6969/announce"
 ];
 
-// Regex ITA Potenziata
+// Regex ITA: Accetta ITA, ITALIAN, MULTI, DUAL (Case Insensitive)
 const ITA_REGEX = /\b(ITA|ITALIAN|ITALIANO|MULTI|DUAL|MD|SUB[\s._-]?ITA|FORCED|AC3[\s._-]?ITA|DTS[\s._-]?ITA|CINEFILE|NOVARIP|MEM|ROBBYRS|IDN_CREW|PSO|BADASS)\b/i;
 
 // --- UTILITIES ---
@@ -40,7 +40,7 @@ function cleanString(str) {
 }
 
 function extractInfoHash(magnet) {
-    if (!magnet) return null;
+    if (!magnet || typeof magnet !== 'string') return null;
     const match = magnet.match(/btih:([A-Fa-f0-9]{40}|[A-Za-z2-7]{32})/i);
     return match ? match[1].toUpperCase() : null;
 }
@@ -74,12 +74,21 @@ function buildMagnet(infoHash, name) {
     return `magnet:?xt=urn:btih:${infoHash}&dn=${encodeURIComponent(name)}${trackersStr}`;
 }
 
+function decodeHtmlEntities(text) {
+    if (!text) return "";
+    const entities = {
+        '&amp;': '&', '&lt;': '<', '&gt;': '>', '&quot;': '"', '&#39;': "'",
+        '&nbsp;': ' ', '&#8217;': "'", '&#8220;': '"', '&#8221;': '"',
+        '&#8211;': '–', '&#8212;': '—'
+    };
+    return text.replace(/&[#\w]+;/g, match => entities[match] || match);
+}
+
 /* ===========================================================
-   🏴‍☠️ 1. IL CORSARO NERO (Re della ricerca ITA)
+   🏴‍☠️ 1. IL CORSARO NERO (Cerca Titolo Puro)
    =========================================================== */
 async function searchCorsaro(query) {
     try {
-        // Corsaro non ama le query troppo lunghe o complesse
         const searchUrl = `${CORSARO_BASE_URL}/search?q=${encodeURIComponent(query)}`;
         const { data } = await axios.get(searchUrl, {
             timeout: TIMEOUT_MS,
@@ -90,7 +99,7 @@ async function searchCorsaro(query) {
         const rows = $('tbody tr').toArray();
         const results = [];
 
-        for (const row of rows.slice(0, 8)) {
+        for (const row of rows.slice(0, 30)) {
             const titleEl = $(row).find('th a');
             const title = titleEl.text().trim();
             const url = titleEl.attr('href');
@@ -102,7 +111,7 @@ async function searchCorsaro(query) {
             try {
                 const detailUrl = `${CORSARO_BASE_URL}${url}`;
                 const detailRes = await axios.get(detailUrl, {
-                    timeout: 5000, // Timeout breve per i dettagli
+                    timeout: 4000,
                     headers: { 'User-Agent': USER_AGENT }
                 });
                 const $$ = cheerio.load(detailRes.data);
@@ -126,11 +135,11 @@ async function searchCorsaro(query) {
 }
 
 /* ===========================================================
-   🚀 2. 1337x
+   🚀 2. 1337x (Cerca Globale, Filtra ITA)
    =========================================================== */
 async function search1337x(title, year) {
     const cleanTitle = cleanString(title);
-    const query = `${cleanTitle} ITA`; 
+    const query = year ? `${cleanTitle} ${year}` : cleanTitle;
     const candidates = new Map();
     const headers = { "User-Agent": USER_AGENT };
 
@@ -145,31 +154,34 @@ async function search1337x(title, year) {
 
         $("table.table-list tbody tr").each((_, row) => {
             const tds = $(row).find("td");
-            const nameLink = tds.eq(0).find("a").eq(1);
+            let nameLink = tds.eq(0).find("a[href^='/torrent/']").first();
+            if (!nameLink.length) nameLink = tds.eq(0).find("a").eq(1);
+            
             if (!nameLink.length) return;
 
             const name = nameLink.text().trim();
-            if (!ITA_REGEX.test(name)) return;
-
             const torrentPath = nameLink.attr("href");
             if (!torrentPath) return;
 
-            if (year) {
-                const y = parseInt(year);
-                if (!name.includes(y.toString()) && !name.includes((y-1).toString()) && !name.includes((y+1).toString())) return;
-            }
+            // 🔥 FILTRO ITA
+            if (!ITA_REGEX.test(name)) return;
 
             const seeders = parseInt(tds.eq(1).text().replace(/,/g, "")) || 0;
             const sizeText = tds.eq(4).text();
             
             let sizeBytes = 0;
-            if (sizeText.includes("GB")) sizeBytes = parseFloat(sizeText) * 1073741824;
-            else if (sizeText.includes("MB")) sizeBytes = parseFloat(sizeText) * 1048576;
+            const sizeMatch = sizeText.match(/([\d.]+)\s*([A-Z]+)/i);
+            if (sizeMatch) {
+                const val = parseFloat(sizeMatch[1]);
+                const unit = sizeMatch[2].toUpperCase();
+                if (unit.includes('GB')) sizeBytes = val * 1024 * 1024 * 1024;
+                else if (unit.includes('MB')) sizeBytes = val * 1024 * 1024;
+            }
 
             candidates.set(torrentPath, { name, path: torrentPath, seeders, sizeBytes, size: sizeText });
         });
 
-        const topCandidates = [...candidates.values()].sort((a, b) => b.seeders - a.seeders).slice(0, 5);
+        const topCandidates = [...candidates.values()].sort((a, b) => b.seeders - a.seeders).slice(0, 15);
 
         const magnets = await Promise.all(topCandidates.map(async c => {
             try {
@@ -177,16 +189,20 @@ async function search1337x(title, year) {
                 const { data: detailData } = await axios.get(detailUrl, { timeout: 6000, headers });
                 const $$ = cheerio.load(detailData);
                 
-                const magnet = $$("a[href^='magnet:']").first().attr("href");
-                if (!magnet) return null;
+                let magnet = $$("a[href^='magnet:']").first().attr("href");
+                if (!magnet) {
+                    const html = $$('body').html();
+                    const match = html.match(/magnet:\?xt=urn:btih:[a-zA-Z0-9]+/);
+                    if (match) magnet = match[0];
+                }
 
-                const m = magnet.match(/btih:([A-F0-9]{40})/i);
-                const hash = m ? m[1].toUpperCase() : null;
-                if (!hash) return null;
+                if (!magnet) return null;
+                const infoHash = extractInfoHash(magnet);
+                if (!infoHash) return null;
 
                 return {
                     title: c.name,
-                    magnet: buildMagnet(hash, c.name),
+                    magnet: buildMagnet(infoHash, c.name),
                     size: c.size,
                     sizeBytes: c.sizeBytes,
                     seeders: c.seeders,
@@ -204,12 +220,12 @@ async function search1337x(title, year) {
 }
 
 /* ===========================================================
-   🌊 3. APIBAY / TPB
+   🌊 3. APIBAY (Cerca Globale, Filtra ITA)
    =========================================================== */
 async function searchAPIBay(title, year) {
     try {
         const cleanTitle = cleanString(title);
-        const query = `${cleanTitle} ITA`;
+        const query = year ? `${cleanTitle} ${year}` : cleanTitle;
         const categoryId = year ? 200 : 205; 
         
         const { data } = await axios.get(APIBAY_URL, {
@@ -221,12 +237,9 @@ async function searchAPIBay(title, year) {
 
         return data.map(item => {
             if (!item.info_hash || item.info_hash === "0000000000000000000000000000000000000000") return null;
+            
+            // 🔥 FILTRO ITA
             if (!ITA_REGEX.test(item.name)) return null;
-
-            if (year) {
-                const y = parseInt(year);
-                if (!item.name.includes(y.toString()) && !item.name.includes((y-1).toString()) && !item.name.includes((y+1).toString())) return null;
-            }
 
             const sizeBytes = parseInt(item.size);
             return {
@@ -246,12 +259,15 @@ async function searchAPIBay(title, year) {
 }
 
 /* ===========================================================
-   🦉 4. KNABEN
+   🦉 4. KNABEN (Cerca Globale, Filtra ITA)
    =========================================================== */
-async function searchKnaben(query) {
+async function searchKnaben(title, year) {
     try {
-        const cleanQuery = cleanString(query);
-        const url = `${KNABEN_BASE_URL}/search/${encodeURIComponent(cleanQuery)}/0/1/seeders`;
+        const cleanTitle = cleanString(title);
+        // Cerca "Titolo Anno" per massimizzare i risultati
+        const query = year ? `${cleanTitle} ${year}` : cleanTitle;
+        
+        const url = `${KNABEN_BASE_URL}/search/${encodeURIComponent(query)}/0/1/seeders`;
         
         const { data } = await axios.get(url, {
             timeout: TIMEOUT_MS,
@@ -265,17 +281,19 @@ async function searchKnaben(query) {
             const cells = $(row).find('td');
             if (cells.length < 5) return;
 
-            const title = $(cells[1]).find('a').first().text().trim();
-            if (!ITA_REGEX.test(title)) return;
+            const torrentTitle = $(cells[1]).find('a').first().text().trim();
+            
+            // 🔥 FILTRO ITA: Se non contiene ITA/Multi, scarta.
+            if (!ITA_REGEX.test(torrentTitle)) return;
 
             const magnet = $(cells[1]).find('a[href^="magnet:"]').attr('href');
             const sizeStr = $(cells[2]).text().trim();
             const seeds = parseInt($(cells[4]).text().trim()) || 0;
 
-            if (title && magnet) {
+            if (torrentTitle && magnet) {
                 results.push({
-                    title, magnet, size: sizeStr, sizeBytes: parseSize(sizeStr),
-                    seeders: seeds, source: 'Knaben', quality: extractQuality(title)
+                    title: torrentTitle, magnet, size: sizeStr, sizeBytes: parseSize(sizeStr),
+                    seeders: seeds, source: 'Knaben', quality: extractQuality(torrentTitle)
                 });
             }
         });
@@ -287,32 +305,84 @@ async function searchKnaben(query) {
 }
 
 /* ===========================================================
-   📊 5. UINDEX
+   📊 5. UINDEX (Cerca ITA)
    =========================================================== */
 async function searchUIndex(query) {
     try {
+        const headers = {
+            'User-Agent': USER_AGENT,
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Connection': 'keep-alive',
+            'Cache-Control': 'no-cache'
+        };
+
         const url = `${UINDEX_BASE_URL}/search.php?search=${encodeURIComponent(query)}`;
         const { data } = await axios.get(url, {
             timeout: TIMEOUT_MS,
-            headers: { 'User-Agent': USER_AGENT }
+            headers: headers
         });
 
-        const rows = data.split(/<tr[^>]*>/gi).filter(r => r.includes('magnet:?') && r.includes('<td'));
+        if (!data || typeof data !== 'string') return [];
+
+        const rows = data.split(/<tr[^>]*>/gi).filter(r => r.includes('magnet:'));
         
         return rows.map(row => {
-            const magnetMatch = row.match(/href=["'](magnet:\?xt=urn:btih:[^"']+)["']/i);
-            if (!magnetMatch) return null;
-            
-            const titleMatch = row.match(/<a[^>]*>([^<]+)<\/a>/i);
-            const title = titleMatch ? titleMatch[1].replace(/<[^>]+>/g, '').trim() : "Unknown";
-            const sizeMatch = row.match(/([\d.,]+\s*[A-Z]+)/i);
-            const size = sizeMatch ? sizeMatch[1] : "Unknown";
+            try {
+                const magnetMatch = row.match(/(magnet:\?xt=urn:btih:[a-zA-Z0-9]+[^"'\s<>]*)/i);
+                if (!magnetMatch) return null;
+                let magnetLink = decodeHtmlEntities(magnetMatch[1]);
 
-            return {
-                title, magnet: magnetMatch[1], size, sizeBytes: parseSize(size),
-                seeders: 0, source: 'UIndex', quality: extractQuality(title)
-            };
+                const cellRegex = /<td[^>]*>(.*?)<\/td>/gis;
+                const cells = [];
+                let cellMatch;
+                while ((cellMatch = cellRegex.exec(row)) !== null) {
+                    cells.push(cellMatch[1].trim());
+                }
+
+                if (cells.length < 2) return null;
+
+                let title = "Unknown";
+                const titleCell = cells[1]; 
+                const titleMatch = titleCell.match(/<a[^>]*>([^<]+)<\/a>/i);
+                if (titleMatch) {
+                    title = titleMatch[1];
+                } else {
+                    title = titleCell.replace(/<[^>]+>/g, '').trim();
+                }
+                title = decodeHtmlEntities(title).trim();
+                if (title.length < 3) return null;
+
+                // 🔥 FILTRO ITA
+                if (!ITA_REGEX.test(title)) return null;
+
+                let sizeStr = "Unknown";
+                if (cells.length > 2) {
+                    const sizeMatch = cells[2].match(/([\d.,]+\s*(?:B|KB|MB|GB|TB|KiB|MiB|GiB|TiB))/i);
+                    if (sizeMatch) sizeStr = sizeMatch[1].trim();
+                }
+
+                let seeders = 0;
+                if (cells.length > 3) {
+                    for(let i=3; i < cells.length; i++) {
+                        const num = parseInt(cells[i].replace(/<[^>]+>/g, '').trim());
+                        if (!isNaN(num) && cells[i].includes('green')) {
+                            seeders = num;
+                            break;
+                        }
+                    }
+                    if (seeders === 0 && cells[4]) {
+                         const s = parseInt(cells[4].replace(/<[^>]+>/g, ''));
+                         if(!isNaN(s)) seeders = s;
+                    }
+                }
+
+                return {
+                    title, magnet: magnetLink, size: sizeStr, sizeBytes: parseSize(sizeStr),
+                    seeders: seeders, source: 'UIndex', quality: extractQuality(title)
+                };
+            } catch (err) { return null; }
         }).filter(Boolean);
+
     } catch (e) {
         console.error("❌ UIndex Error:", e.message);
         return [];
@@ -324,33 +394,39 @@ async function searchUIndex(query) {
    =========================================================== */
 async function searchMagnet(title, year) {
     const cleanTitle = cleanString(title);
-    const queryIta = `${cleanTitle} ITA`;
     
-    console.log(`\n🔍 [ALL-IN-ONE SEARCH] "${cleanTitle}" (${year})`);
+    // 1. Corsaro cerca "Titolo" (trova meglio se il titolo è pulito)
+    const queryCorsaro = cleanTitle;
+    
+    // 2. UIndex cerca "Titolo ITA" (è specifico)
+    const queryUIndex = `${cleanTitle} ITA`;
+
+    // 3. Knaben/1337x/API cercano "Titolo Anno" (per trovare le release Multi)
+    // Se è una serie, solo Titolo.
+    const queryGlobal = year ? `${cleanTitle} ${year}` : cleanTitle;
+    
+    console.log(`\n🔍 [SEARCH] "${cleanTitle}" (${year})`);
+    console.log(`   🏴‍☠️ Corsaro Query: "${queryCorsaro}"`);
+    console.log(`   🇮🇹 UIndex Query: "${queryUIndex}"`);
+    console.log(`   🌍 Global Query: "${queryGlobal}" (Filter: ITA/Multi)`);
     
     // --- FIX CORSARO SERIES LOGIC ---
-    // Corsaro non trova "S01E01", ma trova "Stagione 1".
-    // Creiamo una query specifica solo per Corsaro se è una serie TV.
     let corsaroQuery = cleanTitle;
-    const seriesMatch = cleanTitle.match(/(.+?)\s+S(\d{1,2})/i); // Cattura "Titolo Sxx"
-
+    const seriesMatch = cleanTitle.match(/(.+?)\s+S(\d{1,2})/i); 
     if (seriesMatch) {
-        // Trasforma "Gomorra S01E01" in "Gomorra Stagione 1"
         const cleanName = seriesMatch[1].trim();
         const seasonNum = parseInt(seriesMatch[2]);
         corsaroQuery = `${cleanName} Stagione ${seasonNum}`;
-        console.log(`🇮🇹 Corsaro Optimized Query: "${corsaroQuery}"`);
+        console.log(`   🏴‍☠️ Corsaro Series: "${corsaroQuery}"`);
     }
     // -------------------------------
 
-    console.log(`📡 Sources: Corsaro, 1337x, APIBay, Knaben, UIndex`);
-
     const promises = [
-        searchCorsaro(corsaroQuery),        // <--- Query modificata (Stagione X)
-        search1337x(cleanTitle, year),      // Query standard (SxxExx)
-        searchAPIBay(cleanTitle, year),     // Query standard (SxxExx)
-        searchKnaben(cleanTitle),           // Query standard
-        searchUIndex(queryIta)              // Query standard
+        searchCorsaro(corsaroQuery),        
+        search1337x(cleanTitle, year),  // Passiamo cleanTitle, la funzione gestisce queryGlobal
+        searchAPIBay(cleanTitle, year), 
+        searchKnaben(cleanTitle, year), // Passiamo cleanTitle, la funzione gestisce queryGlobal
+        searchUIndex(queryUIndex)       // Passiamo query ITA specifica
     ];
 
     const resultsArray = await Promise.allSettled(promises);
@@ -360,25 +436,28 @@ async function searchMagnet(title, year) {
         if (res.status === 'fulfilled') allResults.push(...res.value);
     });
 
-    // --- DEDUPLICAZIONE ---
+    // --- DEDUPLICAZIONE & FILTRO FINALE ---
     const uniqueMap = new Map();
     
     allResults.forEach(item => {
+        // Filtro di sicurezza finale (Dovrebbe essere già stato fatto, ma double check)
+        if (!ITA_REGEX.test(item.title)) return;
+
         const hash = extractInfoHash(item.magnet);
         if (!hash) return;
+
+        // 🔥 CAMPI OBBLIGATORI PER STREMIO
+        item.infoHash = hash; 
+        item.magnetLink = item.magnet; 
 
         if (!uniqueMap.has(hash)) {
             uniqueMap.set(hash, item);
         } else {
             const existing = uniqueMap.get(hash);
-            
-            // Priorità:
-            // 1. Corsaro Nero (perché è nativo italiano)
-            if (item.source === 'CorsaroNero') {
+            // Prioritizziamo sempre Corsaro/UIndex
+            if (item.source === 'CorsaroNero' || item.source === 'UIndex') {
                 uniqueMap.set(hash, item);
-            } 
-            // 2. Chi ha più seeders
-            else if (existing.source !== 'CorsaroNero' && item.seeders > existing.seeders) {
+            } else if (existing.source !== 'CorsaroNero' && existing.source !== 'UIndex' && item.seeders > existing.seeders) {
                 uniqueMap.set(hash, item);
             }
         }
@@ -391,27 +470,24 @@ async function searchMagnet(title, year) {
         const isCorsaroA = a.source === 'CorsaroNero';
         const isCorsaroB = b.source === 'CorsaroNero';
         
-        // Corsaro sempre per primo
         if (isCorsaroA && !isCorsaroB) return -1;
         if (!isCorsaroA && isCorsaroB) return 1;
 
-        // Poi per Seeders
         if (b.seeders !== a.seeders) return b.seeders - a.seeders;
 
-        // Poi per Qualità
         const qScore = (q) => (q === '4k' ? 3 : q === '1080p' ? 2 : 1);
         return qScore(b.quality) - qScore(a.quality);
     });
 
-    console.log(`✅ Totale Risultati Unici: ${uniqueResults.length}`);
+    console.log(`✅ Totale Risultati ITA: ${uniqueResults.length}`);
     
     const sources = uniqueResults.reduce((acc, curr) => {
         acc[curr.source] = (acc[curr.source] || 0) + 1;
         return acc;
     }, {});
-    console.log(`📊 Distribuzione Fonti: ${JSON.stringify(sources)}`);
+    console.log(`📊 Fonti: ${JSON.stringify(sources)}`);
 
-    return uniqueResults.slice(0, 40); 
+    return uniqueResults.slice(0, 80); 
 }
 
 module.exports = { searchMagnet };
