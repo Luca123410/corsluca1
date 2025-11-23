@@ -110,7 +110,7 @@ function isExactEpisodeMatch(torrentTitle, season, episode) {
 
 // --- PARSING STREAM INFO ---
 function extractStreamInfo(title) {
-    const t = title.toLowerCase();
+    const t = (title || "").toLowerCase();
     let quality = "Unknown";
     
     if (t.includes("2160p") || t.includes("4k") || t.includes("uhd")) quality = "4k";
@@ -132,15 +132,20 @@ async function getMetadata(id, type, tmdbKey) {
     try {
         let tmdbId = id;
         let seasonNum, episodeNum;
+        
+        // Gestione ID composti (es. tt12345:1:1 o tmdb:123:1:1)
         if (type === 'series' && id.includes(':')) {
             const parts = id.split(':');
-            tmdbId = parts[0]; seasonNum = parseInt(parts[1]); episodeNum = parseInt(parts[2]);
+            tmdbId = parts[0]; 
+            seasonNum = parseInt(parts[1]); 
+            episodeNum = parseInt(parts[2]);
         }
         
+        // Risoluzione IMDb ID -> TMDB ID
         if (tmdbId.startsWith('tt')) {
             const res = await axiosInstance.get(`https://api.themoviedb.org/3/find/${tmdbId}?api_key=${tmdbKey}&language=it-IT&external_source=imdb_id`);
-            if (type === 'movie' && res.data.movie_results[0]) tmdbId = res.data.movie_results[0].id;
-            else if (type === 'series' && res.data.tv_results[0]) tmdbId = res.data.tv_results[0].id;
+            if (type === 'movie' && res.data.movie_results?.[0]) tmdbId = res.data.movie_results[0].id;
+            else if (type === 'series' && res.data.tv_results?.[0]) tmdbId = res.data.tv_results[0].id;
         } else if (tmdbId.startsWith('tmdb:')) {
             tmdbId = tmdbId.split(':')[1];
         }
@@ -162,12 +167,17 @@ async function getMetadata(id, type, tmdbKey) {
                 title: details.title || details.name,
                 aliases: aliases,
                 year: (details.release_date || details.first_air_date)?.split('-')[0],
-                isSeries: type === 'series', season: seasonNum, episode: episodeNum,
+                isSeries: type === 'series', 
+                season: seasonNum, 
+                episode: episodeNum,
                 imdb_id: details.external_ids?.imdb_id
             };
         }
         return null;
-    } catch (e) { return null; }
+    } catch (e) { 
+        console.error("Error fetching metadata:", e.message);
+        return null; 
+    }
 }
 
 // --- STREAM HANDLER ---
@@ -183,7 +193,7 @@ async function generateStream(type, id, config, userConfStr) {
 
     console.log(`⚡ STREAM LIVE: Nuova richiesta stream elaborata`);
     
-    if (!rd && !torbox || !tmdb) return { streams: [{ title: "⚠️ Configurazione Mancante" }] };
+    if ((!rd && !torbox) || !tmdb) return { streams: [{ title: "⚠️ Configurazione Mancante" }] };
 
     try {
         const metadata = await getMetadata(id, type, tmdb);
@@ -220,8 +230,6 @@ async function generateStream(type, id, config, userConfStr) {
         
         // 1. 🔥 ESEGUI RICERCA CORE (TorrentMagnet) con le 3 query migliori
         let corePromises = [];
-        
-        // Esegui la ricerca Core per le TOP 3 query generate.
         queries.slice(0, 3).forEach(q => {
              corePromises.push(safeSearch(TorrentMagnet.searchMagnet(q, yearFilter))); 
         });
@@ -234,12 +242,10 @@ async function generateStream(type, id, config, userConfStr) {
 
         if (initialCount < 2) { // PRIORITY FILTER
             let externalPromises = [];
-            
             if (!filters.onlyIta) {
                  // Usa la query primaria (queries[0]) per la ricerca esterna
                  externalPromises.push(safeSearch(External.searchMagnet(id, type, metadata.imdb_id, queries[0]))); 
             }
-            
             const externalResultsArray = await Promise.all(externalPromises);
             allResults.push(...externalResultsArray.flat());
         }
@@ -253,34 +259,39 @@ async function generateStream(type, id, config, userConfStr) {
             const hashMatch = item.magnet.match(/btih:([A-F0-9]{40})/i);
             const key = hashMatch ? hashMatch[1].toUpperCase() : item.magnet;
             
-            const isPriority = prioritySources.some(s => item.source.includes(s));
+            const itemSource = item.source || "Unknown";
+            const isPriority = prioritySources.some(s => itemSource.includes(s));
 
             if (!uniqueMap.has(key)) {
                 uniqueMap.set(key, item);
             } else {
                 const existing = uniqueMap.get(key);
-                const existingIsPriority = prioritySources.some(s => existing.source.includes(s));
+                const existingSource = existing.source || "Unknown";
+                const existingIsPriority = prioritySources.some(s => existingSource.includes(s));
                 
                 if (isPriority && !existingIsPriority) uniqueMap.set(key, item);
-                else if (isPriority && existingIsPriority && (item.seeders > existing.seeders)) uniqueMap.set(key, item);
+                else if (isPriority && existingIsPriority && ((item.seeders || 0) > (existing.seeders || 0))) uniqueMap.set(key, item);
             }
         }
         let uniqueResults = Array.from(uniqueMap.values());
 
         // --- FILTRAGGIO ---
         uniqueResults = uniqueResults.filter(item => {
+            const itemSource = item.source || "Unknown";
+            const itemTitle = item.title || "Unknown";
+
             if (metadata.isSeries) {
                 // FIX: Includi le sorgenti Core nella lista "Trusted" per evitare di filtrare i risultati di CorsaroNero
-                const externalTrusted = ["Tio", "Torrentio", "BitSearch", "SolidTorrents", "YTS"].some(s => item.source.includes(s));
-                const isTrusted = prioritySources.some(s => item.source.includes(s)) || externalTrusted;
+                const externalTrusted = ["Tio", "Torrentio", "BitSearch", "SolidTorrents", "YTS"].some(s => itemSource.includes(s));
+                const isTrusted = prioritySources.some(s => itemSource.includes(s)) || externalTrusted;
 
-                if (!isTrusted && !isExactEpisodeMatch(item.title, metadata.season, metadata.episode)) return false;
+                if (!isTrusted && !isExactEpisodeMatch(itemTitle, metadata.season, metadata.episode)) return false;
             }
             
             // --- FILTRO LINGUA (Stesso di prima, basato su onlyIta) ---
             if (filters.onlyIta) {
-                 const t = item.title.toLowerCase();
-                 if (item.source.includes("Corsaro")) return true;
+                 const t = itemTitle.toLowerCase();
+                 if (itemSource.includes("Corsaro")) return true;
                  const advancedItaRegex = /\b(ita|italian|italiano|multi|dual|md|sub[\s._-]?ita|forced|ac3[\s._-]?ita|dts[\s._-]?ita|cinefile|novarip|mem|robbyrs|idn_crew|pso|badass)\b/i;
                  return advancedItaRegex.test(t);
             }
@@ -290,9 +301,11 @@ async function generateStream(type, id, config, userConfStr) {
         // --- ORDINAMENTO ---
         uniqueResults.sort((a, b) => {
             const getRank = (item) => {
-                const isIta = /\b(ita|italian)\b/i.test(item.title) || item.source.includes("Corsaro");
-                const is4k = /2160p|4k|uhd/i.test(item.title);
-                if (isIta && (is4k || /1080p|fhd/i.test(item.title))) return 4;
+                const t = (item.title || "").toLowerCase();
+                const s = (item.source || "").toLowerCase(); // Fix crash on source null
+                const isIta = /\b(ita|italian)\b/i.test(t) || s.includes("corsaro");
+                const is4k = /2160p|4k|uhd/i.test(t);
+                if (isIta && (is4k || /1080p|fhd/i.test(t))) return 4;
                 if (is4k) return 3;
                 if (isIta) return 2;
                 return 1;
@@ -300,7 +313,7 @@ async function generateStream(type, id, config, userConfStr) {
             const rA = getRank(a);
             const rB = getRank(b);
             if (rA !== rB) return rB - rA;
-            return (b.seeders !== a.seeders) ? b.seeders - a.seeders : (b.sizeBytes || 0) - (a.sizeBytes || 0); 
+            return (b.seeders || 0) - (a.seeders || 0) || (b.sizeBytes || 0) - (a.sizeBytes || 0); 
         });
 
         const topResults = uniqueResults.slice(0, 150); 
@@ -309,30 +322,38 @@ async function generateStream(type, id, config, userConfStr) {
         let streams = [];
         for (const item of topResults) {
             let streamData = null;
+            const itemMagnet = item.magnet;
              
             if (torbox) {
                 try {
-                    streamData = await DebridX.getStreamLink(config.torbox, item.magnet);
-                } catch (e) { }
+                    streamData = await DebridX.getStreamLink(config.torbox, itemMagnet);
+                } catch (e) { /* Ignora errori Torbox */ }
             }
 
             if (!streamData && rd) {
                 try {
-                    streamData = await RD.getStreamLink(config.rd, item.magnet);
-                } catch (e) { }
+                    streamData = await RD.getStreamLink(config.rd, itemMagnet);
+                } catch (e) { /* Ignora errori RD */ }
             }
             
-            const fileTitle = streamData?.filename || item.title;
+            const itemTitle = item.title || "Unknown";
+            const fileTitle = streamData?.filename || itemTitle;
             const { quality, extraInfo } = extractStreamInfo(fileTitle);
-            const finalSize = streamData?.size ? formatBytes(streamData.size) : (item.size || "??");
+            
+            // Fix: Usa sizeBytes se size stringa è assente
+            const finalSize = streamData?.size 
+                ? formatBytes(streamData.size) 
+                : (item.size || (item.sizeBytes ? formatBytes(item.sizeBytes) : "??"));
+
             const seeders = item.seeders || 0;
+            const itemSource = item.source || "Unknown";
             
             // --- UI LOGIC ---
             let langLabel = "GB 🇬🇧"; 
             let flagIcon = "🇬🇧";
             
             const lowerTitle = fileTitle.toLowerCase();
-            const lowerSource = item.source.toLowerCase();
+            const lowerSource = itemSource.toLowerCase();
 
             if (/\b(multi|dual|md)\b/i.test(lowerTitle)) {
                 langLabel = "GB + IT";
@@ -346,13 +367,13 @@ async function generateStream(type, id, config, userConfStr) {
             }
 
             // Stile UI
-            const nameLine = `${flagIcon} ${langLabel}\n${item.source} ${quality}`;
+            const nameLine = `${flagIcon} ${langLabel}\n${itemSource} ${quality}`;
             
             let titleStr = `📂 ${fileTitle}\n`;
             titleStr += `💾 ${finalSize}   👤 ${seeders}\n`;
             titleStr += `🌐 ${flagIcon} ${langLabel}`;
             if (extraInfo) titleStr += ` | ${extraInfo}`;
-            titleStr += `\n🔗 ${item.source}`;
+            titleStr += `\n🔗 ${itemSource}`;
 
             if (streamData) {
                 streams.push({
@@ -365,11 +386,10 @@ async function generateStream(type, id, config, userConfStr) {
                     name: nameLine,
                     description: "❄️ Uncached. Clicca per scaricare.",
                     title: `${titleStr}\n❄️ Download (No Cache)`,
-                    url: item.magnet,
+                    url: itemMagnet,
                     behaviorHints: { notWebReady: true, bingeGroup: "uncached" }
                 });
             }
-            // Rimosso: await wait(2); 
         }
 
         const finalResponse = streams.length === 0 
