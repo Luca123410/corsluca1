@@ -27,7 +27,7 @@ const TRACKERS = [
     "udp://tracker.tiny-vps.com:6969/announce"
 ];
 
-const httpsAgent = new https.Agent({ rejectUnauthorized: false });
+// Rimosso: const httpsAgent = new https.Agent({ rejectUnauthorized: false });
 
 // Regex ITA Potenziata
 const ITA_REGEX = /\b(ITA|ITALIAN|ITALIANO|MULTI|DUAL|MD|SUB[\s._-]?ITA|FORCED|AC3[\s._-]?ITA|DTS[\s._-]?ITA|CINEFILE|NOVARIP|MEM|ROBBYRS|IDN_CREW|PSO|BADASS)\b/i;
@@ -266,7 +266,7 @@ async function searchKnaben(query) {
         
         const { data } = await axios.get(url, {
             timeout: TIMEOUT_MS,
-            httpsAgent: httpsAgent,
+            // Rimosso: httpsAgent: httpsAgent,
             headers: { 'User-Agent': USER_AGENT }
         });
 
