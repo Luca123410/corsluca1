@@ -270,7 +270,10 @@ async function generateStream(type, id, config, userConfStr) {
         // --- FILTRAGGIO ---
         uniqueResults = uniqueResults.filter(item => {
             if (metadata.isSeries) {
-                const isTrusted = ["Tio", "Torrentio", "BitSearch", "SolidTorrents", "YTS"].some(s => item.source.includes(s));
+                // FIX: Includi le sorgenti Core nella lista "Trusted" per evitare di filtrare i risultati di CorsaroNero
+                const externalTrusted = ["Tio", "Torrentio", "BitSearch", "SolidTorrents", "YTS"].some(s => item.source.includes(s));
+                const isTrusted = prioritySources.some(s => item.source.includes(s)) || externalTrusted;
+
                 if (!isTrusted && !isExactEpisodeMatch(item.title, metadata.season, metadata.episode)) return false;
             }
             
