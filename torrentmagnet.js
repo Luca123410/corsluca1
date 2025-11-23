@@ -341,7 +341,7 @@ async function searchMagnet(title, year) {
 
     console.log(`\n🔍 Search: "${cleanTitle}"`);
 
-    // Usiamo Promise.allSettled per far girare TUTTO in parallelo senza bloccare se uno fallisce
+    
     const promises = [
         searchCorsaro(corsaroQueryFinal),        
         search1337x(cleanTitle, year),  
@@ -360,7 +360,7 @@ async function searchMagnet(title, year) {
     // --- Deduplicazione ---
     const uniqueMap = new Map();
     allResults.forEach(item => {
-        // Doppio controllo ITA (tranne per Corsaro/UIndex che sono già ITA)
+        // Doppio controllo ITA 
         const isItaSource = item.source === 'CorsaroNero' || item.source === 'UIndex';
         if (!isItaSource && !ITA_REGEX.test(item.title)) return;
 
