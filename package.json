@@ -1,15 +1,14 @@
 {
-  "name": "stremio-corsaro-vercel",
+  "name": "corsaro-vercel",
   "version": "1.0.0",
-  "description": "Stremio Addon Vercel",
   "main": "addon.js",
   "scripts": {
     "start": "node addon.js"
   },
   "dependencies": {
-    "express": "^4.19.2",
+    "express": "^4.18.2",
     "cors": "^2.8.5",
-    "axios": "^1.6.8",
+    "axios": "^1.6.0",
     "cheerio": "^1.0.0-rc.12",
     "node-cache": "^5.1.2"
   },
