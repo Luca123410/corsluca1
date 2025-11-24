@@ -3,26 +3,51 @@ const cors = require("cors");
 const path = require("path");
 const axios = require("axios");
 const NodeCache = require("node-cache");
+const http = require('http');
+const https = require('https');
 
-// Moduli interni
+// --- MODULI ESTERNI ---
 const RD = require("./rd");
-const DebridX = require("./debridx");
-const TorrentMagnet = require("./torrentmagnet"); // Il nuovo motore "Viola"
-const External = require("./external");
+const DebridX = require("./debridx"); 
+const TorrentMagnet = require("./torrentmagnet"); 
+const External = require("./external"); 
 
-// Configurazione Cache (importante per non sprecare esecuzioni serverless)
-const streamCache = new NodeCache({ stdTTL: 600, checkperiod: 60 }); 
+// --- ANTI-BLOCKING ---
+const USER_AGENTS = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 13_6_1) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15'
+];
+
+function getRandomUA() {
+    return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
+}
+
+const axiosInstance = axios.create({
+    timeout: 9000, // Timeout ridotto per Vercel
+    httpAgent: new http.Agent({ keepAlive: true }),
+    httpsAgent: new https.Agent({ keepAlive: true }),
+    headers: { 'Accept': 'application/json', 'Accept-Encoding': 'gzip, deflate' }
+});
+
+axiosInstance.interceptors.request.use(config => {
+    config.headers['User-Agent'] = getRandomUA();
+    return config;
+});
+
+// --- CACHE ---
+const streamCache = new NodeCache({ stdTTL: 900, checkperiod: 60 }); 
 
 const app = express();
 app.use(cors());
+app.disable('x-powered-by'); 
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Manifest
+// --- MANIFEST ---
 const manifestBase = {
-    id: "org.community.corsaro-viola-method",
-    version: "1.0.0",
-    name: "Corsaro (Metodo Viola)",
-    description: "Vercel Edition: Motore API-Based veloce e senza blocchi.",
+    id: "org.community.corsaro-vercel",
+    version: "23.5.6",
+    name: "Corsaro Vercel Edition",
+    description: "V23.5.6: Vercel Optimized (No Proxy Required)",
     resources: ["catalog", "stream"],
     types: ["movie", "series"],
     catalogs: [],
@@ -30,132 +55,156 @@ const manifestBase = {
     behaviorHints: { configurable: true, configurationRequired: true }
 };
 
-// Utilities
+// --- UTILITIES ---
 function formatBytes(bytes) {
     if (!+bytes) return '0 B';
     const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return `${parseFloat((bytes / Math.pow(k, i)).toFixed(2))} ${['B', 'KB', 'MB', 'GB', 'TB'][i]}`;
+    return `${parseFloat((bytes / Math.pow(k, i)).toFixed(2))} ${sizes[i]}`;
 }
 
 function getConfig(configStr) {
     try { 
-        return JSON.parse(Buffer.from(configStr, 'base64').toString()); 
+        const config = JSON.parse(Buffer.from(configStr, 'base64').toString()); 
+        return { rd: config.rd, torbox: config.torbox, tmdb: config.tmdb, filters: config.filters || {} };
     } catch (e) { return {}; }
 }
 
-function extractQuality(title) {
+function extractStreamInfo(title) {
     const t = (title || "").toLowerCase();
-    if (t.includes("2160p") || t.includes("4k")) return "4K";
-    if (t.includes("1080p")) return "1080p";
-    if (t.includes("720p")) return "720p";
-    return "SD";
+    let quality = "Unknown";
+    if (t.includes("2160p") || t.includes("4k")) quality = "4k";
+    else if (t.includes("1080p")) quality = "1080p";
+    else if (t.includes("720p")) quality = "720p";
+    else if (t.includes("480p") || t.includes("sd")) quality = "SD";
+    return { quality };
 }
 
-// --- METADATA (TMDB) ---
+// --- METADATA ---
 async function getMetadata(id, type, tmdbKey) {
     try {
         let tmdbId = id;
-        if (id.startsWith('tt')) {
-            const find = await axios.get(`https://api.themoviedb.org/3/find/${id}?api_key=${tmdbKey}&external_source=imdb_id`);
-            tmdbId = find.data[`${type}_results`]?.[0]?.id || id;
+        let seasonNum, episodeNum;
+        
+        if (type === 'series' && id.includes(':')) {
+            const parts = id.split(':');
+            tmdbId = parts[0]; seasonNum = parseInt(parts[1]); episodeNum = parseInt(parts[2]);
         }
         
-        const res = await axios.get(`https://api.themoviedb.org/3/${type === 'movie' ? 'movie' : 'tv'}/${tmdbId}?api_key=${tmdbKey}&language=it-IT`);
-        const d = res.data;
-        
-        let season = 0, episode = 0;
-        if (type === 'series' && id.includes(':')) {
-            const p = id.split(':');
-            season = parseInt(p[1]);
-            episode = parseInt(p[2]);
+        if (tmdbId.startsWith('tt')) {
+            const res = await axiosInstance.get(`https://api.themoviedb.org/3/find/${tmdbId}?api_key=${tmdbKey}&language=it-IT&external_source=imdb_id`);
+            if (type === 'movie' && res.data.movie_results?.[0]) tmdbId = res.data.movie_results[0].id;
+            else if (type === 'series' && res.data.tv_results?.[0]) tmdbId = res.data.tv_results[0].id;
         }
 
-        return {
-            title: d.title || d.name,
-            year: (d.release_date || d.first_air_date)?.split('-')[0],
-            isSeries: type === 'series',
-            season, episode
-        };
+        const res = await axiosInstance.get(`https://api.themoviedb.org/3/${type === 'movie' ? 'movie' : 'tv'}/${tmdbId}?api_key=${tmdbKey}&language=it-IT&append_to_response=alternative_titles`);
+        const details = res.data;
+
+        if (details) {
+            const usefulAliases = (details.alternative_titles?.results || []).filter(a => ['US', 'GB'].includes(a.iso_3166_1)).map(a => a.title);
+            let aliases = [details.title || details.name, details.original_title || details.original_name, ...usefulAliases];
+            return {
+                title: details.title || details.name,
+                aliases: [...new Set(aliases.filter(Boolean))],
+                year: (details.release_date || details.first_air_date)?.split('-')[0],
+                isSeries: type === 'series', season: seasonNum, episode: episodeNum,
+                imdb_id: details.external_ids?.imdb_id
+            };
+        }
+        return null;
     } catch (e) { return null; }
 }
 
-// --- STREAM GENERATION ---
+// --- STREAM HANDLER ---
 async function generateStream(type, id, config, userConfStr) {
-    const { rd, torbox, tmdb } = config || {};
-    const cacheKey = `${id}-${userConfStr}`;
-    
+    const { rd, torbox, tmdb } = config || {}; 
+    const filters = config.filters || {}; 
+    const cacheKey = `stream:${userConfStr}:${type}:${id}`;
+
     if (streamCache.has(cacheKey)) return streamCache.get(cacheKey);
-    if (!tmdb || (!rd && !torbox)) return { streams: [{ title: "⚠️ Configurazione mancante (TMDB/Debrid)" }] };
+    if ((!rd && !torbox) || !tmdb) return { streams: [{ title: "⚠️ Configurazione Mancante" }] };
 
     try {
-        const meta = await getMetadata(id, type, tmdb);
-        if (!meta) return { streams: [{ title: "⚠️ Metadata error" }] };
+        const metadata = await getMetadata(id, type, tmdb);
+        if (!metadata) return { streams: [{ title: "⚠️ Metadata non trovato" }] };
 
-        // Costruzione Query "Viola Style": Titolo + ITA
-        let query = `${meta.title} ITA`;
-        if (meta.isSeries) {
-            // Cerca s01e01
-            query = `${meta.title} S${String(meta.season).padStart(2,'0')}E${String(meta.episode).padStart(2,'0')} ITA`;
+        let query = "";
+        if (metadata.isSeries) {
+            const s = metadata.season.toString().padStart(2, '0');
+            const e = metadata.episode.toString().padStart(2, '0');
+            query = `${metadata.title} S${s}E${e}`;
         } else {
-            query = `${meta.title} ${meta.year} ITA`;
+            query = `${metadata.title} ${metadata.year}`;
         }
 
-        // Chiamata al nuovo motore
-        const torrents = await TorrentMagnet.searchMagnet(query);
+        // RICERCA OTTIMIZZATA PER VERCEL
+        // Usiamo solo 1 query principale per risparmiare tempo
+        const results = await TorrentMagnet.searchMagnet(query, metadata.isSeries ? null : metadata.year);
         
-        // Ordina per seeders
-        torrents.sort((a,b) => b.seeders - a.seeders);
-        const top = torrents.slice(0, 20);
+        // Filtri base
+        let uniqueResults = results.filter(item => {
+            if (filters.onlyIta) {
+                const t = (item.title || "").toLowerCase();
+                const s = (item.source || "").toLowerCase();
+                if (s.includes("corsaro")) return true;
+                return /\b(ita|italian|italiano|multi)\b/i.test(t);
+            }
+            return true;
+        });
+
+        // Ordinamento Seeders
+        uniqueResults.sort((a, b) => (b.seeders || 0) - (a.seeders || 0));
+        const topResults = uniqueResults.slice(0, 30); 
 
         let streams = [];
-        for (const t of top) {
-            let linkInfo = null;
-            // Prova Debrid
-            if (rd && !linkInfo) try { linkInfo = await RD.getStreamLink(rd, t.magnet); } catch(e){}
-            if (torbox && !linkInfo) try { linkInfo = await DebridX.getStreamLink(torbox, t.magnet); } catch(e){}
-
-            const quality = extractQuality(t.title);
-            const size = linkInfo?.size ? formatBytes(linkInfo.size) : t.size;
+        for (const item of topResults) {
+            let streamData = null;
+            if (torbox) try { streamData = await DebridX.getStreamLink(config.torbox, item.magnet); } catch (e) {}
+            if (!streamData && rd) try { streamData = await RD.getStreamLink(config.rd, item.magnet); } catch (e) {}
             
-            if (linkInfo) {
-                streams.push({
-                    name: `🇮🇹 ${t.source}\n${quality}`,
-                    title: `${t.title}\n💾 ${size} 👤 ${t.seeders}`,
-                    url: linkInfo.url
-                });
-            } else if (config.filters?.showFake) {
-                streams.push({
-                    name: `🇮🇹 ${t.source}\n${quality}`,
-                    title: `❄️ [Download] ${t.title}\n💾 ${size}`,
-                    url: t.magnet,
-                    behaviorHints: { notWebReady: true }
-                });
+            const fileTitle = streamData?.filename || item.title || "Unknown";
+            const { quality } = extractStreamInfo(fileTitle);
+            const size = streamData?.size ? formatBytes(streamData.size) : (item.size || "??");
+            
+            const nameLine = `🇮🇹 ${item.source}\n${quality}`;
+            const titleStr = `${fileTitle}\n💾 ${size} 👤 ${item.seeders}`;
+
+            if (streamData) {
+                streams.push({ name: nameLine, title: titleStr, url: streamData.url });
+            } else if (filters.showFake) {
+                streams.push({ name: nameLine, title: `❄️ [Download] ${titleStr}`, url: item.magnet, behaviorHints: { notWebReady: true } });
             }
         }
 
-        const resp = { streams: streams.length ? streams : [{ title: "🚫 Nessun risultato ITA trovato" }] };
-        streamCache.set(cacheKey, resp);
-        return resp;
+        const finalResponse = { streams: streams.length ? streams : [{ title: "🚫 Nessun risultato trovato" }] };
+        streamCache.set(cacheKey, finalResponse, 600);
+        return finalResponse;
 
-    } catch (e) {
-        return { streams: [{ title: "Errore Vercel/Timeout" }] };
-    }
+    } catch (error) { return { streams: [{ title: "Errore Vercel" }] }; }
 }
 
-// Routes
+// --- ROUTING VERCEL ---
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 
-app.get('/:conf/manifest.json', (req, res) => {
+app.get('/:userConf/manifest.json', (req, res) => {
+    const config = getConfig(req.params.userConf);
+    const m = { ...manifestBase };
+    if ((config.tmdb && config.rd) || (config.tmdb && config.torbox)) m.behaviorHints = { configurable: true, configurationRequired: false };
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.json(manifestBase);
+    res.json(m);
 });
 
-app.get('/:conf/stream/:type/:id.json', async (req, res) => {
+app.get('/:userConf/stream/:type/:id.json', async (req, res) => {
+    const streams = await generateStream(req.params.type, req.params.id.replace('.json', ''), getConfig(req.params.userConf), req.params.userConf);
     res.setHeader('Access-Control-Allow-Origin', '*');
-    const streams = await generateStream(req.params.type, req.params.id.replace('.json',''), getConfig(req.params.conf), req.params.conf);
+    res.setHeader('Cache-Control', 'public, max-age=300'); 
     res.json(streams);
 });
 
-// Vercel Export
+// LOGICA AVVIO: Se locale usa listen, se Vercel esporta app
+const PORT = process.env.PORT || 7000;
+if (process.env.NODE_ENV !== 'production') {
+    app.listen(PORT, () => console.log(`Locale attivo su porta ${PORT}`));
+}
 module.exports = app;
