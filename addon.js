@@ -3,25 +3,22 @@ const cors = require("cors");
 const path = require("path");
 const axios = require("axios");
 const NodeCache = require("node-cache");
-const http = require('http');
-const https = require('https');
 
 // --- MODULI ESTERNI ---
-// Assicurati che questi file siano nella root del progetto!
+// Ho mantenuto solo quelli sicuri che avevi nell'altro file.
+// Se hai anche gli altri file, puoi riaggiungerli qui.
 const RD = require("./rd");
-const DebridX = require("./debridx"); 
-const TorrentMagnet = require("./torrentmagnet"); // Il file che hai caricato
-const External = require("./external"); 
+const TorrentMagnet = require("./torrentmagnet"); 
 
-// --- CONFIGURAZIONE NETWORK ---
-// Timeout globale molto aggressivo per Vercel (Hobby plan ha max 10s)
+// --- CONFIGURAZIONE NETWORK (VPS OPTIMIZED) ---
+// Timeout aumentato a 20s perché su VPS non abbiamo fretta come su Vercel
 const axiosInstance = axios.create({
-    timeout: 5000, 
-    headers: { 'User-Agent': 'Corsaro-Vercel/23.6.1' }
+    timeout: 20000, 
+    headers: { 'User-Agent': 'Corsaro-VPS/1.0' }
 });
 
 // --- CONFIGURAZIONE CACHE ---
-const streamCache = new NodeCache({ stdTTL: 900, checkperiod: 60 }); 
+const streamCache = new NodeCache({ stdTTL: 1800, checkperiod: 300 }); // 30 Minuti cache
 
 const app = express();
 app.use(cors());
@@ -30,20 +27,18 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 // --- MANIFEST ---
 const manifestBase = {
-    id: "org.community.corsaro-vercel",
-    version: "23.6.1", // Versione bumpata
-    name: "Corsaro (Vercel Fast)",
-    description: "🇮🇹 Cloud Edition. Ottimizzato per Vercel.",
+    id: "org.community.corsaro-vps",
+    version: "23.7.0", 
+    name: "Corsaro (VPS Edition)",
+    description: "🇮🇹 Cloud Edition. Ottimizzato per Server/VPS.",
     resources: ["catalog", "stream"],
     types: ["movie", "series"],
-    catalogs: [], // Catalogo vuoto per velocità
+    catalogs: [], 
     idPrefixes: ["tmdb", "tt"],
-    behaviorHints: { configurable: true, configurationRequired: false } 
+    behaviorHints: { configurable: true, configurationRequired: true } 
 };
 
 // --- UTILITIES ---
-const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-
 function formatBytes(bytes) {
     if (!+bytes) return '0 B';
     const k = 1024;
@@ -57,7 +52,6 @@ function getConfig(configStr) {
         const config = JSON.parse(Buffer.from(configStr, 'base64').toString()); 
         return {
             rd: config.rd,
-            torbox: config.torbox,
             tmdb: config.tmdb,
             filters: config.filters || {}
         };
@@ -73,7 +67,6 @@ function isExactEpisodeMatch(torrentTitle, season, episode) {
     if (new RegExp(`s${sStr}[^0-9]*e${eStr}`, 'i').test(title)) return true;
     if (new RegExp(`\\b${s}x${eStr}\\b`, 'i').test(title)) return true;
     
-    // Supporto Pack Stagione
     if (new RegExp(`stagione\\s*${s}(?!\\d)`, 'i').test(title) || 
         new RegExp(`s${sStr}\\s*(?:completa|pack|full)`, 'i').test(title)) {
         if (title.match(/e\d{2}/i) && !title.includes(`e${eStr}`)) return false; 
@@ -85,7 +78,7 @@ function isExactEpisodeMatch(torrentTitle, season, episode) {
 function extractStreamInfo(title) {
     const t = (title || "").toLowerCase();
     let quality = "Unknown";
-    if (t.includes("2160p") || t.includes("4k")) quality = "4k";
+    if (t.includes("2160p") || t.includes("4k")) quality = "4K UHD";
     else if (t.includes("1080p") || t.includes("fhd")) quality = "1080p";
     else if (t.includes("720p")) quality = "720p";
     else if (t.includes("480p") || t.includes("sd")) quality = "SD";
@@ -128,23 +121,24 @@ async function getMetadata(id, type, tmdbKey) {
             season: seasonNum, episode: episodeNum,
             imdb_id: details.external_ids?.imdb_id
         };
-    } catch (e) { return null; }
+    } catch (e) { console.log("Meta Error", e.message); return null; }
 }
 
-// --- GENERAZIONE STREAM (OTTIMIZZATA) ---
+// --- GENERAZIONE STREAM (VPS LOGIC) ---
 async function generateStream(type, id, config, userConfStr) {
-    const { rd, torbox, tmdb } = config || {}; 
+    const { rd, tmdb } = config || {}; 
     const filters = config.filters || {}; 
     const cacheKey = `stream:${userConfStr}:${type}:${id}`;
 
+    // 1. Controllo Cache
     if (streamCache.has(cacheKey)) {
         console.log(`🚀 Cache Hit: ${id}`);
         return streamCache.get(cacheKey);
     }
 
-    console.log(`🔍 Vercel Request: ${type} ${id}`);
+    console.log(`🔍 VPS Request: ${type} ${id}`);
     
-    if ((!rd && !torbox) || !tmdb) return { streams: [{ title: "⚠️ Configurazione Mancante" }] };
+    if (!rd || !tmdb) return { streams: [{ title: "⚠️ Configurazione Mancante\nInserisci API Key" }] };
 
     try {
         const metadata = await getMetadata(id, type, tmdb);
@@ -155,29 +149,20 @@ async function generateStream(type, id, config, userConfStr) {
             const s = metadata.season.toString().padStart(2, '0');
             const e = metadata.episode.toString().padStart(2, '0');
             queries.push(`${metadata.title} S${s}E${e}`); 
-            if (metadata.aliases[1]) queries.push(`${metadata.aliases[1]} S${s}E${e}`);
+            // Aggiungiamo query più specifiche
+            queries.push(`${metadata.title} Stagione ${metadata.season}`);
         } else {
             queries.push(`${metadata.title} ${metadata.year}`); 
+            queries.push(`${metadata.title} ITA`);
         }
 
-        // --- SCRAPING TIMEBOXED ---
-        // Vercel muore dopo 10s. Diamo massimo 4.5s allo scraping.
-        const safeSearch = (promise) => new Promise(r => { 
-            setTimeout(() => r([]), 4500); 
-            promise.then(r).catch(e => { console.error("Scrape Error", e.message); r([]); });
-        });
-
-        // Avvia ricerche
-        let searchPromises = queries.slice(0, 2).map(q => safeSearch(TorrentMagnet.searchMagnet(q, metadata.isSeries ? null : metadata.year)));
+        // 2. Ricerca Torrent (Senza limiti di tempo stretti)
+        let searchPromises = queries.map(q => TorrentMagnet.searchMagnet(q, metadata.isSeries ? null : metadata.year).catch(() => []));
         
-        if (!filters.onlyIta) {
-             searchPromises.push(safeSearch(External.searchMagnet(id, type, metadata.imdb_id, queries[0])));
-        }
-
         const resultsArrays = await Promise.all(searchPromises);
         let allResults = resultsArrays.flat();
 
-        // --- DEDUPLICAZIONE ---
+        // 3. Deduplicazione
         let uniqueMap = new Map();
         for (const item of allResults) {
             if (!item || !item.magnet) continue;
@@ -190,7 +175,7 @@ async function generateStream(type, id, config, userConfStr) {
         }
         let uniqueResults = Array.from(uniqueMap.values());
 
-        // --- FILTRI ---
+        // 4. Filtri Pre-Debrid
         uniqueResults = uniqueResults.filter(item => {
             if (metadata.isSeries && !isExactEpisodeMatch(item.title, metadata.season, metadata.episode)) return false;
             if (filters.onlyIta) {
@@ -201,26 +186,29 @@ async function generateStream(type, id, config, userConfStr) {
             return true;
         });
 
-        // --- ORDINAMENTO ---
+        // 5. Ordinamento e Selezione
         uniqueResults.sort((a, b) => (b.seeders || 0) - (a.seeders || 0));
 
-        // ⚠️ LIMITAZIONE DRASTICA PER VERCEL
-        // Prendiamo solo i 6 risultati migliori per garantire che la conversione Debrid finisca in tempo
-        const topResults = uniqueResults.slice(0, 6); 
+        // VPS POWER: Controlliamo fino a 30 risultati (Addon 8 ne controllava solo 6)
+        const topResults = uniqueResults.slice(0, 30); 
 
-        // --- RISOLUZIONE DEBRID (PARALLELA) ---
-        // Su Vercel usiamo parallelo puro perché l'IP cambia spesso, il rate limit è meno problematico del timeout.
+        console.log(`⚡ Risoluzione Debrid per ${topResults.length} items...`);
+
+        // 6. Risoluzione Debrid
         const streamPromises = topResults.map(async (item) => {
             try {
                 let streamData = null;
-                // Torbox
-                if (torbox) { try { streamData = await DebridX.getStreamLink(config.torbox, item.magnet); } catch (e) {} }
-                // Real-Debrid
-                if (!streamData && rd) { try { streamData = await RD.getStreamLink(config.rd, item.magnet); } catch (e) {} }
+                // Prova Real-Debrid
+                if (rd) { 
+                    try { streamData = await RD.getStreamLink(config.rd, item.magnet); } 
+                    catch (e) { if(e.message.includes('429')) await new Promise(r => setTimeout(r, 500)); } 
+                }
 
-                const fileTitle = streamData?.filename || item.title;
+                if (!streamData) return null;
+
+                const fileTitle = streamData.filename || item.title;
                 const { quality, extraInfo } = extractStreamInfo(fileTitle);
-                const finalSize = streamData?.size ? formatBytes(streamData.size) : (item.size || "??");
+                const finalSize = streamData.size ? formatBytes(streamData.size) : (item.size || "??");
                 
                 let flagIcon = "🇬🇧"; let langLabel = "ENG";
                 const lowerTitle = fileTitle.toLowerCase();
@@ -233,18 +221,10 @@ async function generateStream(type, id, config, userConfStr) {
                 }
 
                 const titleStr = `📂 ${fileTitle}\n💾 ${finalSize} 👤 ${item.seeders || 0}\n${flagIcon} ${langLabel} ${extraInfo}\n🔗 ${item.source || "P2P"}`;
-                const nameLine = `${flagIcon} ${langLabel}\n${quality}`;
+                const nameLine = `[RD] ${langLabel}\n${quality}`;
 
-                if (streamData && streamData.url) {
+                if (streamData.url) {
                     return { name: nameLine, title: titleStr, url: streamData.url };
-                } else if (filters.showFake) {
-                    return {
-                        name: nameLine,
-                        description: "📥 Download to Debrid",
-                        title: `${titleStr}\n❄️ UNCACHED (Click)`,
-                        url: item.magnet,
-                        behaviorHints: { notWebReady: true, bingeGroup: "uncached" }
-                    };
                 }
             } catch (err) { return null; }
             return null;
@@ -266,15 +246,16 @@ async function generateStream(type, id, config, userConfStr) {
 }
 
 // --- ROUTING ---
-app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
+app.get('/', (req, res) => res.send('Corsaro VPS is Running 🚀'));
 
 app.get('/:userConf/manifest.json', (req, res) => {
     const config = getConfig(req.params.userConf);
     const m = { ...manifestBase };
     
-    // Forza installazione
-    m.behaviorHints = { configurable: true, configurationRequired: false };
-    m.logo = "https://dl.strem.io/addon-logo.png"; 
+    // Auto-configurazione se i dati ci sono
+    if (config.rd && config.tmdb) {
+        m.behaviorHints.configurationRequired = false;
+    }
     
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.json(m);
@@ -293,19 +274,16 @@ app.get('/:userConf/stream/:type/:id.json', async (req, res) => {
         req.params.userConf 
     );
     res.setHeader('Access-Control-Allow-Origin', '*');
+    // Cache breve browser per fluidità
     res.setHeader('Cache-Control', 'public, max-age=60'); 
     res.json(streams);
 });
 
-// --- SERVER START (VERCEL COMPATIBLE) ---
+// --- SERVER START (VPS MODE) ---
+// Questa è la parte cruciale che mancava:
 const PORT = process.env.PORT || 7000;
 
-// Se NON siamo su Vercel (sviluppo locale), avvia il server normalmente
-if (process.env.NODE_ENV !== 'production') {
-    app.listen(PORT, () => {
-        console.log(`🚀 Addon running locally on port ${PORT}`);
-    });
-}
-
-// Esporta l'app per Vercel
-module.exports = app;
+app.listen(PORT, () => {
+    console.log(`🚀 Addon (VPS Edition) avviato sulla porta ${PORT}`);
+    console.log(`   http://localhost:${PORT}/manifest.json`);
+});
