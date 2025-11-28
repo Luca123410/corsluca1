@@ -1,67 +1,81 @@
 const axios = require("axios");
 
-async function getStreamLink(apiKey, magnetLink) {
-    if (!apiKey || !magnetLink) return null;
+const RD_TIMEOUT = 60000; 
 
+async function rdRequest(method, url, token, data = null) {
     try {
-        // 1. Estrai l'Hash
-        const hashMatch = magnetLink.match(/btih:([a-zA-Z0-9]+)/);
-        const hash = hashMatch ? hashMatch[1].toLowerCase() : null;
-        if (!hash) return null;
-
-        // 2. CONTROLLO SICUREZZA (Anti-Ban)
-        // Chiediamo se è disponibile PRIMA di aggiungerlo. Questo evita il blocco API.
-        const availUrl = `https://api.real-debrid.com/rest/1.0/torrents/instantAvailability/${hash}`;
-        const availRes = await axios.get(availUrl, { 
-            headers: { Authorization: `Bearer ${apiKey}` },
-            timeout: 5000 
-        });
-        
-        const dataset = availRes.data[hash];
-        // Se non c'è in cache, ci fermiamo subito. Niente addMagnet -> Niente Ban.
-        if (!dataset || !dataset.rd || dataset.rd.length === 0) {
-            return null; 
-        }
-
-        // 3. Aggiungi Magnet (Solo se sicuro)
-        const addUrl = "https://api.real-debrid.com/rest/1.0/torrents/addMagnet";
-        const addRes = await axios.post(addUrl, `magnet=${encodeURIComponent(magnetLink)}`, {
-            headers: { Authorization: `Bearer ${apiKey}` }
-        });
-        const torrentId = addRes.data.id;
-
-        // 4. Seleziona File
-        const selectUrl = `https://api.real-debrid.com/rest/1.0/torrents/selectFiles/${torrentId}`;
-        await axios.post(selectUrl, "files=all", {
-            headers: { Authorization: `Bearer ${apiKey}` }
-        });
-
-        // 5. Ottieni Link
-        const infoUrl = `https://api.real-debrid.com/rest/1.0/torrents/info/${torrentId}`;
-        const infoRes = await axios.get(infoUrl, { headers: { Authorization: `Bearer ${apiKey}` } });
-        const originalLink = infoRes.data.links[0];
-        
-        if (!originalLink) return null;
-
-        // 6. Sblocca Link
-        const unrestrictUrl = "https://api.real-debrid.com/rest/1.0/unrestrict/link";
-        const unrestrictRes = await axios.post(unrestrictUrl, `link=${originalLink}`, {
-            headers: { Authorization: `Bearer ${apiKey}` }
-        });
-
-        return {
-            url: unrestrictRes.data.download,
-            filename: unrestrictRes.data.filename,
-            size: unrestrictRes.data.filesize
+        const config = {
+            method,
+            url,
+            headers: { Authorization: `Bearer ${token}` },
+            timeout: RD_TIMEOUT
         };
-
+        if (data) config.data = data;
+        const response = await axios(config);
+        return response.data;
     } catch (error) {
-        // Se becchi l'errore 429 o 503, vuol dire che devi aspettare
-        if (error.response && error.response.status === 429) {
-            console.log("⚠️ RATE LIMIT: Rallenta!");
-        }
-        return null;
+        if (method === 'POST' && url.includes('addMagnet') && error.response?.status === 400) return null;
+        throw error;
     }
 }
 
-module.exports = { getStreamLink };
+const RD = {
+    // --- NUOVA FUNZIONE PER VELOCITÀ ---
+    checkInstantAvailability: async (token, hashes) => {
+        try {
+            // RD API vuole gli hash uniti da /
+            const hashString = hashes.join('/');
+            const url = `https://api.real-debrid.com/rest/1.0/torrents/instantAvailability/${hashString}`;
+            const data = await rdRequest('GET', url, token);
+            return data || {};
+        } catch (e) {
+            console.log("⚠️ Instant Check Error:", e.message);
+            return {};
+        }
+    },
+
+    getStreamLink: async (token, magnet) => {
+        try {
+            const addUrl = "https://api.real-debrid.com/rest/1.0/torrents/addMagnet";
+            const body = new URLSearchParams();
+            body.append("magnet", magnet);
+            
+            const addRes = await rdRequest('POST', addUrl, token, body);
+            if (!addRes || !addRes.id) throw new Error("Add Failed");
+            const torrentId = addRes.id;
+
+            let info = await rdRequest('GET', `https://api.real-debrid.com/rest/1.0/torrents/info/${torrentId}`, token);
+            
+            if (info.status === 'waiting_files_selection') {
+                const selUrl = `https://api.real-debrid.com/rest/1.0/torrents/selectFiles/${torrentId}`;
+                const selBody = new URLSearchParams();
+                selBody.append("files", "all");
+                await rdRequest('POST', selUrl, token, selBody);
+                info = await rdRequest('GET', `https://api.real-debrid.com/rest/1.0/torrents/info/${torrentId}`, token);
+            }
+
+            if (info.status === 'downloaded' && info.links && info.links.length > 0) {
+                // Prende il file più grande
+                const videoFiles = info.files.filter(f => f.selected && f.bytes > 10 * 1024 * 1024);
+                // Logica semplice: prendiamo il primo link sbloccabile
+                const linkToUnrestrict = info.links[0]; 
+
+                const unrestrictUrl = "https://api.real-debrid.com/rest/1.0/unrestrict/link";
+                const unResBody = new URLSearchParams();
+                unResBody.append("link", linkToUnrestrict);
+                
+                const unrestrictRes = await rdRequest('POST', unrestrictUrl, token, unResBody);
+
+                return {
+                    type: 'ready',
+                    url: unrestrictRes.download,
+                    filename: unrestrictRes.filename,
+                    size: unrestrictRes.filesize
+                };
+            }
+            return null;
+        } catch (e) { throw e; }
+    }
+};
+
+module.exports = RD;
